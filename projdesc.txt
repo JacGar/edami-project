@@ -1,0 +1,5 @@
+Eps neighborhood and k-nearest neighbours
+Triangular inequality
+
+make load
+./load sports.mat
