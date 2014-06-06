@@ -25,6 +25,7 @@ void usage(const char * argv0) {
   cerr << "Usage: " << argv0 << " <infile>" << endl;
 }
 
+/* file import {{{ */
 void load_fiile(const string& infilename, matrix_t& out) {
   
   FILE *fp;
@@ -74,7 +75,10 @@ void load_fiile(const string& infilename, matrix_t& out) {
     ++row;
   }
 }
+/* }}} */
+/* distance implementations {{{ */
 
+typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int);
 
 double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2) {
     // 45 seconds for n rows
@@ -183,6 +187,7 @@ out:
   return sqrt(dist);
 }
 
+/*}}}*/
 
 /**
  * Helper function to walk left/right in a distance array, gradually returning values that are farther away.
@@ -212,7 +217,7 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_v
   // at the beginning of the function
   if (/*dist_r == DBL_MAX || */ dist_l <= dist_r) {
     lbound--;
-    return nake_pair(distvec[lbound].second, dist_l);
+    return make_pair(distvec[lbound].second, dist_l);
   }
   if (/*dist_l == DBL_MAX || */ dist_r <= dist_l) {
     rbound++;
@@ -222,23 +227,40 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_v
   throw runtime_error("obligatory 'this should never happen'");
 }
 
-
-void epsneighbourhood(matrix_t &m, const distvector_t &distvec) {
+/* eps neighbourhood {{{ */
+/**
+ * get the neighbours for a given distvector within range eps.
+ * Returned are the distvector indices.
+ */
+template <distance_fun distanceFun>
+void getneighbours(matrix_t &m, const distvector_t &distvec, size_t distvector_idx, double eps, std::vector<size_t>& ret) {
   size_t lbound, rbound;
-  lbound = rbound = distvec.size()/2;
-  //lbound = rbound = 0;
-  //lbound = rbound = distvec.size()-1;
-  double mid_value = distvec[lbound].first;
+  lbound = rbound = distvector_idx;
+  double mid_value = distvec[distvector_idx].first;
 
-  unsigned int next_index;
-  while ((next_index = get_next(distvec, mid_value, lbound, rbound)) != UINT_MAX) {
-    cout << next_index << "\t" 
-      << lbound << "=(" << distvec[lbound].first << ", " << distvec[lbound].second <<")\t"
-      << rbound << "=(" << distvec[rbound].first << ", " << distvec[rbound].second <<")" << endl;
+  pair<unsigned int, double> next_index;
+  while ((next_index = get_next(distvec, mid_value, lbound, rbound)).first != UINT_MAX) {
+    if (next_index.second > eps) {
+      break;
+    }
+    // calculate real distance:
+    double dist = distanceFun(m, distvec[distvector_idx].second, distvec[next_index.first].second);
+    if (dist <= eps) {
+      ret.push_back(next_index.first);
+    }
   }
-  cout << mid_value << endl;
 }
 
+void epsneighbourhood(matrix_t &m, const distvector_t &distvec) {
+    std::vector<size_t> neighbours;
+  getneighbours<manhattan_distance_manual_cached>(m, distvec, (size_t)0, 2.0, neighbours);
+  for (int i = 0; i < neighbours.size(); ++i) {
+    cout << neighbours[i] << endl;
+  }
+}
+
+/*}}}*/
+/* trace code {{{ */
 
 const int ntrc = 5;
 const char* trace_points[ntrc] = {"start", "read", "dist0", "sort", "cluster"};
@@ -256,6 +278,8 @@ void dump_trace() {
     cout << trace_points[i] << "\t" << (trace_tstamps[i]-trace_tstamps[i-1])/(double)CLOCKS_PER_SEC << endl;
   }
 }
+
+/* }}} */
 
 int main(int argc, char ** argv) {
   string infile;
@@ -285,7 +309,6 @@ int main(int argc, char ** argv) {
       for (unsigned int i = 0; i < data.size1(); ++i) {
         distances[i] = make_pair(manhattan_distance_manual_cached(data, 0, i), i);
       }
-
   }
   trace();
 
