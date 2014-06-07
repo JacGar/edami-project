@@ -2,6 +2,7 @@
 #include <boost/numeric/ublas/matrix_sparse.hpp>
 #include <boost/numeric/ublas/io.hpp>
 #include <boost/numeric/ublas/matrix_proxy.hpp>
+#include <boost/numeric/ublas/symmetric.hpp>
 #include <boost/numeric/ublas/vector.hpp>
 #include <iostream>
 #include <vector>
@@ -19,6 +20,7 @@ using namespace std;
 using namespace boost::numeric::ublas;
 
 typedef compressed_matrix<int> matrix_t;
+typedef symmetric_matrix<double> distancematrix_t; 
 typedef std::vector<pair<double, unsigned int> > distvector_t; 
 
 void usage(const char * argv0) {
@@ -39,8 +41,6 @@ void load_fiile(const string& infilename, matrix_t& out) {
     throw runtime_error("Could not open file " + infilename);
   }
 
-  char buffer[1024];
-  
   read = getline(&line, &len, fp);
 
   if (read == -1) {
@@ -198,6 +198,24 @@ out:
 
 /*}}}*/
 
+template<distance_fun distFun>
+void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, distancematrix_t &dst) {
+  size_t ds1 = data.size1();
+  for (size_t i = 0; i < ds1; ++i) {
+    cout << i << endl;
+    for (size_t j = 0; j < i; ++j) {
+      if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
+        dst(i,j) = distFun(data, i, j);
+      }
+    }
+    dst(i,i) = 0;
+  }
+}
+
+double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
+  return dst(a,b);
+}
+
 /**
  * Helper function to walk left/right in a distance array, gradually returning values that are farther away.
  * Initialize this function by setting lbound and rbound to the offset in the vector where the value mid_value
@@ -249,32 +267,30 @@ struct node_meta {
  * Returned are the distvector indices.
  * TODO use list instead of vector (no random access required, but append)
  */
-template <distance_fun distanceFun>
-void getneighbours(matrix_t &m, const distvector_t &distvec, std::vector<size_t>& ret, size_t distvector_idx, double eps) {
+void getneighbours(const distvector_t &reference_distances, const distancematrix_t &dsm, std::vector<size_t>& ret, size_t distvector_idx, double eps) {
   size_t lbound, rbound;
   lbound = rbound = distvector_idx;
-  double mid_value = distvec[distvector_idx].first;
-  ret.push_back(distvec[distvector_idx].second);
+  double mid_value = reference_distances[distvector_idx].first;
+  ret.push_back(reference_distances[distvector_idx].second);
 
   pair<unsigned int, double> next_index;
-  while ((next_index = get_next(distvec, mid_value, lbound, rbound)).first != UINT_MAX) {
+  while ((next_index = get_next(reference_distances, mid_value, lbound, rbound)).first != UINT_MAX) {
     if (next_index.second > eps) {
       break;
     }
     // calculate real distance:
-    double dist = distanceFun(m, distvec[distvector_idx].second, distvec[next_index.first].second);
+    double dist = get_distance(dsm, reference_distances[distvector_idx].second, reference_distances[next_index.first].second);
     if (dist <= eps) {
       ret.push_back(next_index.first);
     }
   }
 }
 
-template <distance_fun distanceFun>
-void epsneighbourhood(matrix_t &m, const distvector_t &distvec, double eps, size_t minpts, std::vector<node_meta>& nodeinfo) {
+void epsneighbourhood(const distvector_t &reference_distances, const distancematrix_t &dsm, double eps, size_t minpts, std::vector<node_meta>& nodeinfo) {
   int current_cluster = 0;
   std::vector<size_t> neighbours;
-  for (size_t i = 0; i < distvec.size(); ++i) {
-    ssize_t obj_idx = distvec[i].second;
+  for (size_t i = 0; i < reference_distances.size(); ++i) {
+    ssize_t obj_idx = reference_distances[i].second;
     // skip visited nodes
     if (nodeinfo[obj_idx].visited) {
       continue;
@@ -283,7 +299,7 @@ void epsneighbourhood(matrix_t &m, const distvector_t &distvec, double eps, size
 
     // get neighbours
     neighbours.clear();
-    getneighbours<distanceFun>(m, distvec, neighbours, (size_t)i, 2.0);
+    getneighbours(reference_distances, dsm, neighbours, (size_t)i, 2.0);
 
 
     if (neighbours.size() < minpts) {
@@ -294,12 +310,12 @@ void epsneighbourhood(matrix_t &m, const distvector_t &distvec, double eps, size
     nodeinfo[obj_idx].cluster = current_cluster++;
     size_t current_cluster_size = 1;
     cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
-    for (int j = 0; j < neighbours.size(); ++j) {
-      size_t nb_obj_idx = distvec[neighbours[j]].second;
+    for (size_t j = 0; j < reference_distances.size(); ++j) {
+      size_t nb_obj_idx = reference_distances[neighbours[j]].second;
       if (nodeinfo[nb_obj_idx].visited == false) {
         nodeinfo[nb_obj_idx].visited = true;
         std::vector<size_t> nneighbours;
-        getneighbours<distanceFun>(m, distvec, nneighbours, neighbours[j], eps);
+        getneighbours(reference_distances, dsm, nneighbours, neighbours[j], eps);
         if (nneighbours.size() >= minpts) {
           neighbours.insert(neighbours.end(), nneighbours.begin(), nneighbours.end());
           cout << "  Added " << nneighbours.size() << " new neighbours" << endl;
@@ -317,20 +333,18 @@ void epsneighbourhood(matrix_t &m, const distvector_t &distvec, double eps, size
 /*}}}*/
 /* trace code {{{ */
 
-const int ntrc = 5;
-const char* trace_points[ntrc] = {"start", "read", "dist0", "sort", "cluster"};
-double trace_tstamps[ntrc];
+std::vector<const char*> trace_points;
+std::vector<double> trace_tstamps;
 
-void trace() {
-  static int current = 0;
-  if (current < ntrc) {
-    trace_tstamps[current++] = clock();
-  }
+void trace(const char *tp) {
+  trace_points.push_back(tp);
+  trace_tstamps.push_back(clock());
 }
 
 void dump_trace() {
-  for (int i = 1; i < ntrc; ++i) {
-    cout << trace_points[i] << "\t" << (trace_tstamps[i]-trace_tstamps[i-1])/(double)CLOCKS_PER_SEC << endl;
+  trace("");
+  for (size_t i = 0; i < trace_points.size()-1; ++i) {
+    cout << trace_points[i] << "\t" << (trace_tstamps[i+1]-trace_tstamps[i])/(double)CLOCKS_PER_SEC << endl;
   }
 }
 
@@ -343,9 +357,11 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
+  double eps = 0.6;
+  size_t minpts = 10;
   bool use_triangle_inequality = true;
 
-  trace();
+  trace("load file");
   infile= argv[1];
   matrix_t data;
   try {
@@ -354,42 +370,37 @@ int main(int argc, char ** argv) {
     cout << "Error: " << c.what() << endl;
   }
 
-  trace();
-
   // basepoints for triangle inequality
-  distvector_t distances;
-  distances.resize(data.size1());
+  distvector_t reference_distances;
+  reference_distances.resize(data.size1());
   
   if (use_triangle_inequality) {
-      for (unsigned int i = 0; i < data.size1(); ++i) {
-        distances[i] = make_pair(manhattan_distance_manual_cached(data, 0, i), i);
-      }
+    trace("create reference distances");
+    for (unsigned int i = 0; i < data.size1(); ++i) {
+      reference_distances[i] = make_pair(eucledian_distance_builtin(data, 0, i), i);
+    }
   }
-  trace();
+  
+  trace("create distancematrix");
+  distancematrix_t distancematrix(data.size1(), data.size1());
+  create_distance_matrix<eucledian_distance_builtin>(data, reference_distances, eps, distancematrix);
 
+  
+  trace("sort reference distances");
   if (use_triangle_inequality) {
-    sort(distances.begin(), distances.end());
+    sort(reference_distances.begin(), reference_distances.end());
   }
 
-  trace();
-
-  create_distance_matrix(data, distances);
-
-  trace();
-
-  /*for (distvector_t::iterator it = distances.begin(); it != distances.end(); ++it) {
-    cout << it->first << "\t" << it->second << endl;
-  }*/
-
+  trace("clustering");
   std::vector<node_meta> metadata(data.size1());
-  epsneighbourhood<manhattan_distance_manual_cached>(data, distances, 0.6, 10, metadata);
+  epsneighbourhood(reference_distances, distancematrix, eps, minpts, metadata);
 
-  trace();
-
+  trace("output");
   FILE *f = fopen("cluster.out", "w");
-  for (int i = 0; i < metadata.size(); ++i) {
+  for (size_t i = 0; i < metadata.size(); ++i) {
     fprintf(f, "%d%s\n", metadata[i].cluster, metadata[i].noise?" (noise)":"");
   }
   fclose(f);
+
   dump_trace();
 }
