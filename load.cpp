@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <boost/numeric/ublas/matrix_sparse.hpp>
 #include <boost/numeric/ublas/io.hpp>
 #include <boost/numeric/ublas/matrix_proxy.hpp>
@@ -22,14 +24,14 @@ using namespace boost::numeric::ublas;
 typedef compressed_matrix<int> matrix_t;
 typedef symmetric_matrix<double> distancematrix_t; 
 typedef std::vector<pair<double, unsigned int> > distvector_t; 
+typedef std::vector<double> featurescale_t;
 
 void usage(const char * argv0) {
   cerr << "Usage: " << argv0 << " <infile>" << endl;
 }
 
-
 /* file import {{{ */
-void load_fiile(const string& infilename, matrix_t& out) {
+void load_file(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
   
   FILE *fp;
   char * line = NULL;
@@ -60,6 +62,7 @@ void load_fiile(const string& infilename, matrix_t& out) {
   nnzelem = atoi(tk);
 
   out = matrix_t(nrows, ncols, nnzelem);
+  featurescale.resize(ncols, 1.0);
 
   int row = 0;
   while ((read = getline(&line, &len, fp)) != -1)  {
@@ -70,6 +73,7 @@ void load_fiile(const string& infilename, matrix_t& out) {
       next_tk = strtok(NULL, " ");
       int val = atoi(next_tk);
       out(row, idx-1) = val;
+      featurescale[idx-1] = max(featurescale[idx-1], (double)val);
       next_tk = strtok(NULL, " ");
     }
 
@@ -79,9 +83,9 @@ void load_fiile(const string& infilename, matrix_t& out) {
 /* }}} */
 /* distance implementations {{{ */
 
-typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int);
+typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
 
-double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2) {
+double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
     // 45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
     boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
@@ -92,23 +96,21 @@ double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsi
     return dist;
 }
 
-double manhattan_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2) {
+double manhattan_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t &featurescale) {
     // 0.45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
     boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
-    double dist = 0;
     return norm_1(row1_proxy - row2_proxy);
 }
 
-double eucledian_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2) {
+double eucledian_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t &featurescale) {
     // 0.45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
     boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
-    double dist = 0;
     return norm_2(row1_proxy - row2_proxy);
 }
 
-double manhattan_distance_manual(matrix_t &m, long unsigned int row1, long unsigned int row2) {
+double manhattan_distance_manual(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
   // about 18 seconds for n rows. Adding const does not yield any improvement.
   // is there a way to access rows directly, not with this fucking magic thing?
   matrix_t::const_iterator1 it1 = m.begin1();
@@ -144,7 +146,7 @@ out:
   return dist;
 }
 
-double manhattan_distance_manual_cached(matrix_t &m, long unsigned int row1, long unsigned int row2) {
+double manhattan_distance_manual_cached(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
   // this takes about 0.58 sec
   // for the brave: changing anything about the matrix m might yield an invalid iterators, and crashes.
   // this is a sort of workaround fr the fact that we cannot access rows directly, by caching
@@ -182,30 +184,30 @@ double manhattan_distance_manual_cached(matrix_t &m, long unsigned int row1, lon
     }
     if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
       // Manhattan:
-      // dist += fabs(*it1_ - *it2_);
+       dist += fabs(*it1_ - *it2_)/featurescale[it1_.index2()];
       // Euclidean:
-      double dist_t = *it1_ - *it2_;
-      dist += dist_t*dist_t;
+      // double dist_t = (*it1_ - *it2_)/featurescale[it1_.index2()];
+      //dist += dist_t*dist_t;
       it2_++; it1_++;
     }
   }
 out:
   // manhattan:
-  //return dist;
+  return dist;
   // eucledian:
-  return sqrt(dist);
+  //return sqrt(dist);
 }
 
 /*}}}*/
-
+/** distance matrix {{{ */
 template<distance_fun distFun>
-void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, distancematrix_t &dst) {
+void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
   size_t ds1 = data.size1();
   for (size_t i = 0; i < ds1; ++i) {
     cout << i << endl;
     for (size_t j = 0; j < i; ++j) {
       if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
-        dst(i,j) = distFun(data, i, j);
+        dst(i,j) = distFun(data, i, j, featurescale);
       }
     }
     dst(i,i) = 0;
@@ -215,7 +217,8 @@ void create_distance_matrix(matrix_t &data, const distvector_t &reference_distan
 double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
   return dst(a,b);
 }
-
+/**}}}*/
+/** get_next {{{*/
 /**
  * Helper function to walk left/right in a distance array, gradually returning values that are farther away.
  * Initialize this function by setting lbound and rbound to the offset in the vector where the value mid_value
@@ -253,7 +256,7 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_v
 
   throw runtime_error("obligatory 'this should never happen'");
 }
-
+/**}}}*/
 struct node_meta {
   node_meta() : cluster(UINT_MAX), visited(false), noise(false) { }
   unsigned int cluster;
@@ -263,7 +266,7 @@ struct node_meta {
 
 /* eps neighbourhood {{{ */
 /**
- * get the neighbours for a given distvector index within range eps, including the point itself.
+ * get the neighbours for a given distvector index within range eps, excluding the point itself.
  * Returned are the distvector indices.
  * TODO use list instead of vector (no random access required, but append)
  */
@@ -271,7 +274,6 @@ void getneighbours(const distvector_t &reference_distances, const distancematrix
   size_t lbound, rbound;
   lbound = rbound = distvector_idx;
   double mid_value = reference_distances[distvector_idx].first;
-  ret.push_back(reference_distances[distvector_idx].second);
 
   pair<unsigned int, double> next_index;
   while ((next_index = get_next(reference_distances, mid_value, lbound, rbound)).first != UINT_MAX) {
@@ -287,7 +289,7 @@ void getneighbours(const distvector_t &reference_distances, const distancematrix
 }
 
 void epsneighbourhood(const distvector_t &reference_distances, const distancematrix_t &dsm, double eps, size_t minpts, std::vector<node_meta>& nodeinfo) {
-  int current_cluster = 0;
+  int current_cluster = -1;
   std::vector<size_t> neighbours;
   for (size_t i = 0; i < reference_distances.size(); ++i) {
     ssize_t obj_idx = reference_distances[i].second;
@@ -299,15 +301,17 @@ void epsneighbourhood(const distvector_t &reference_distances, const distancemat
 
     // get neighbours
     neighbours.clear();
-    getneighbours(reference_distances, dsm, neighbours, (size_t)i, 2.0);
-
+    neighbours.push_back(obj_idx);
+    getneighbours(reference_distances, dsm, neighbours, (size_t)i, eps);
 
     if (neighbours.size() < minpts) {
       nodeinfo[obj_idx].noise = true;
       continue;
     }
+
+    current_cluster++;
     
-    nodeinfo[obj_idx].cluster = current_cluster++;
+    nodeinfo[obj_idx].cluster = current_cluster;
     size_t current_cluster_size = 1;
     cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
     for (size_t j = 0; j < reference_distances.size(); ++j) {
@@ -357,17 +361,24 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  double eps = 0.6;
-  size_t minpts = 10;
+  double eps = 0.15;
+  size_t minpts = 15;
   bool use_triangle_inequality = true;
+  bool use_feature_scaling = true;
 
   trace("load file");
   infile= argv[1];
   matrix_t data;
+  featurescale_t featurescale;
   try {
-    load_fiile(infile, data);
+    load_file(infile, data, featurescale);
   } catch (const exception& c) {
     cout << "Error: " << c.what() << endl;
+  }
+
+  if (!use_feature_scaling) {
+    featurescale.clear();
+    featurescale.insert(featurescale.end(), data.size2(), 1.0);
   }
 
   // basepoints for triangle inequality
@@ -377,13 +388,14 @@ int main(int argc, char ** argv) {
   if (use_triangle_inequality) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.size1(); ++i) {
-      reference_distances[i] = make_pair(eucledian_distance_builtin(data, 0, i), i);
+      reference_distances[i] = make_pair(manhattan_distance_manual_cached(data, 0, i, featurescale), i);
+      cout << reference_distances[i].first << " ";
     }
   }
   
   trace("create distancematrix");
   distancematrix_t distancematrix(data.size1(), data.size1());
-  create_distance_matrix<eucledian_distance_builtin>(data, reference_distances, eps, distancematrix);
+  create_distance_matrix<manhattan_distance_manual_cached>(data, reference_distances, eps, featurescale, distancematrix);
 
   
   trace("sort reference distances");
@@ -398,9 +410,11 @@ int main(int argc, char ** argv) {
   trace("output");
   FILE *f = fopen("cluster.out", "w");
   for (size_t i = 0; i < metadata.size(); ++i) {
-    fprintf(f, "%d%s\n", metadata[i].cluster, metadata[i].noise?" (noise)":"");
+    fprintf(f, "%u%s\n", metadata[i].cluster, metadata[i].noise?" (noise)":"");
   }
   fclose(f);
 
   dump_trace();
 }
+
+/* vim: set fdm=marker: */
