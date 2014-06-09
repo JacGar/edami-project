@@ -1,11 +1,13 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <boost/program_options.hpp>
 #include <boost/numeric/ublas/matrix_sparse.hpp>
 #include <boost/numeric/ublas/io.hpp>
 #include <boost/numeric/ublas/matrix_proxy.hpp>
 #include <boost/numeric/ublas/symmetric.hpp>
 #include <boost/numeric/ublas/vector.hpp>
+#include <boost/lexical_cast.hpp>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -31,8 +33,7 @@ void usage(const char * argv0) {
 }
 
 /* file import {{{ */
-void load_file(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
-  
+void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) { 
   FILE *fp;
   char * line = NULL;
   size_t len = 0;
@@ -76,8 +77,68 @@ void load_file(const string& infilename, matrix_t& out, featurescale_t &features
       featurescale[idx-1] = max(featurescale[idx-1], (double)val);
       next_tk = strtok(NULL, " ");
     }
-
     ++row;
+  }
+}
+
+template<typename dtype>
+void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &featurescale) { 
+  // this function reads a dense matrix into a sparse filetype, until i can figure out if there
+  // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
+  // both using the sparse datatype and the actual "read" implementation used here.
+  FILE *fp;
+  char * line = NULL;
+  size_t len = 0;
+  ssize_t read;
+
+  fp = fopen(infilename.c_str(), "r");
+  if (fp == NULL) {
+    throw runtime_error("Could not open file " + infilename);
+  }
+
+  read = getline(&line, &len, fp);
+
+  if (read == -1) {
+    throw runtime_error("Could not read file (empty?)");
+  }
+
+
+  unsigned int row = 0;
+  std::vector<std::vector<dtype> > data;
+
+  while ((read = getline(&line, &len, fp)) != -1)  {
+    char* next_tk = strtok(line, " ");
+    unsigned int idx = 0;
+    std::vector<dtype> inner;
+    while (next_tk) {
+      dtype val = atoi(next_tk);
+      inner.push_back(val);
+      
+      if (featurescale.size() <= idx) {
+        featurescale.push_back(val);
+      } else {
+        featurescale[idx] = max(featurescale[idx], (double)val);
+      }
+      idx++;
+      next_tk = strtok(NULL, " ");
+    }
+
+    if (data.size() && inner.size() != data[0].size()) {
+      throw runtime_error("matrix dimension mismatch on row " + boost::lexical_cast<string>(row+1));
+    }
+    ++row;
+    data.push_back(inner);
+  }
+
+  if (!data.size()) {
+    throw runtime_error("Input file didn't contain anything apparently");
+  }
+  out = matrix_t(row, data[0].size(), row*data[0].size());
+
+  for (unsigned int i = 0; i < data.size(); ++i) {
+    for (unsigned int j = 0; j < data[i].size(); ++j) {
+      out(i,j) = data[i][j]; // how very efficient! :/
+    }
   }
 }
 /* }}} */
@@ -354,27 +415,79 @@ void dump_trace() {
 
 /* }}} */
 
+namespace po = boost::program_options;
 
 int main(int argc, char ** argv) {
-  string infile;
-  if (argc < 2) {
-    usage(argv[0]);
+
+  po::options_description desc("program options");
+  desc.add_options()
+    ("help,h", "show usage")
+    ("epsilon,e", po::value<double>()->default_value(0.5), "epsilon")
+    ("minpts,m", po::value<unsigned int>()->default_value(10), "minimum number of points to form a cluster")
+    ("no-triangle-inequality,T", "don't use triangle inequality")
+    ("scale,s", "use feature scaling")
+    ("input-file", "input file")
+    ("input-type,t", po::value<string>()->default_value("cluto"), "File type of the input file. Possible values are:\n"
+                                                                  "  cluto - CLUTO file format (sparse)\n"
+                                                                  "  plain - space seperated features, each in a new line.")
+  ;
+
+  po::positional_options_description p;
+  p.add("input-file", 1);
+
+  po::variables_map vm;
+  po::store(po::command_line_parser(argc, argv).options(desc).positional(p).run(), vm);
+  po::notify(vm);
+
+  if (vm.count("help")) {
+    cout << desc << endl;
     return 1;
   }
 
-  double eps = 0.15;
-  size_t minpts = 15;
   bool use_triangle_inequality = true;
-  bool use_feature_scaling = true;
+  bool use_feature_scaling = false;
+
+  if (vm.count("no-triangle-inequality")) {
+    use_triangle_inequality = false;
+  }
+
+  if (vm.count("scale")) {
+    use_feature_scaling = true;
+  }
+
+  if (!vm.count("input-file")) {
+    cerr << "Error: input file required." << endl;
+    cout << desc << endl;
+    return 1;
+  }
+
+  string filetype = vm["input-type"].as<string>();
+
+  string infile = vm["input-file"].as<string>();
+  double eps = vm["epsilon"].as<double>();
+  size_t minpts = vm["minpts"].as<unsigned int>();
+
+  cout << "reading from " << infile << ", eps=" << eps <<", minpts=" << minpts << ", " 
+    << (use_triangle_inequality?"":"not") << " using triangle inequality, "
+    << (use_feature_scaling?"":"not") << " using feature scaling." << endl;
+
 
   trace("load file");
-  infile= argv[1];
   matrix_t data;
   featurescale_t featurescale;
   try {
-    load_file(infile, data, featurescale);
+    if (filetype == "cluto") {
+      load_file_cluto(infile, data, featurescale);
+    } else if (filetype == "plain") {
+      load_file_plain<unsigned int>(infile, data, featurescale);
+    } else {
+      cerr << "Error: unknown file type " << filetype << endl;
+      cerr << desc << endl;
+      return 1;
+    }
   } catch (const exception& c) {
     cout << "Error: " << c.what() << endl;
+    return 1;
   }
 
   if (!use_feature_scaling) {
