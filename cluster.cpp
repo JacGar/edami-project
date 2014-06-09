@@ -24,10 +24,10 @@
 using namespace std;
 using namespace boost::numeric::ublas;
 
-typedef int datatype; // TODO only int supported for now (atoi function calls) 
+typedef int datatype; // TODO only int supported for now (atoi function calls)
 typedef compressed_matrix<datatype> matrix_t;
-typedef symmetric_matrix<double> distancematrix_t; 
-typedef std::vector<pair<double, unsigned int> > distvector_t; 
+typedef symmetric_matrix<double> distancematrix_t;
+typedef std::vector<pair<double, unsigned int> > distvector_t;
 typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
 
 struct node_meta {
@@ -475,7 +475,7 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 
     current_cluster++;
     string current_cluster_s = boost::lexical_cast<string>(current_cluster);
-    
+
     nodeinfo[obj_idx].cluster = current_cluster_s;
     size_t current_cluster_size = 1;
     cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
@@ -489,10 +489,12 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
           neighbours.insert(neighbours.end(), nneighbours.begin(), nneighbours.end());
           cout << "  Added " << nneighbours.size() << " new neighbours" << endl;
         }
+
       }
       if (nodeinfo[nb_obj_idx].cluster == "") {
         nodeinfo[nb_obj_idx].cluster = current_cluster_s;
         current_cluster_size++;
+        nodeinfo[nb_obj_idx].noise=false;
       }
     }
     cout << "  Cluster size: " << current_cluster_size << endl;
