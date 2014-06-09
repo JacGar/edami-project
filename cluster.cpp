@@ -39,6 +39,8 @@ struct node_meta {
 
 /* }}} */
 
+/* file import {{{ */
+
 #ifdef _WIN32
 /* This code is public domain -- Will Hartung 4/9/09 */
 size_t getline(char **lineptr, size_t *n, FILE *stream) {
@@ -92,9 +94,7 @@ size_t getline(char **lineptr, size_t *n, FILE *stream) {
 
     return p - bufptr - 1;
 }
-
-
-/* file import {{{ */
+#endif
 
 void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
   FILE *fp;
@@ -144,7 +144,6 @@ void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &fe
   }
 }
 
-#endif
 
 template<typename dtype>
 void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
@@ -304,7 +303,7 @@ out:
 template<class T>
 struct c_euclid {
   static inline double aggregate(T a, T b, double fscl) {
-    double dist = a*b/fscl;
+    double dist = (a-b)/fscl;
     return dist*dist;
   }
   static inline double finalize(double dist) {
@@ -368,6 +367,70 @@ out:
   return aggr::finalize(dist);
 }
 
+template<class aggr>
+double distance_find(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
+
+  matrix_t::const_iterator1 it1 = m.find1(1, row1, 0);
+  matrix_t::const_iterator1 it2 = m.find1(1, row2, 0);
+
+  double dist = 0;
+  matrix_t::const_iterator2 it1_ = it1.begin();
+  matrix_t::const_iterator2 it2_ = it2.begin();
+  while (it1_ != it1.end() && it2_ != it2.end()) {
+    while (it1_.index2() < it2_.index2()) {
+      it1_++;
+      if (it1_ == it1.end())
+          goto out;
+    }
+    while (it2_.index2() < it1_.index2()) {
+      it2_++;
+      if (it2_ == it2.end())
+          goto out;
+    }
+    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
+      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
+      //cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
+      //    << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_ << endl;
+      *it1_++; *it2_++;
+    }
+  }
+out:
+  //cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;
+  return aggr::finalize(dist);
+}
+
+template<class aggr>
+double distance_find_2(matrix_t &m1, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t& featurescale) {
+
+  matrix_t::const_iterator1 it1 = m1.find1(1, row1, 0);
+  matrix_t::const_iterator1 it2 = m2.find1(1, row2, 0);
+
+  double dist = 0;
+  matrix_t::const_iterator2 it1_ = it1.begin();
+  matrix_t::const_iterator2 it2_ = it2.begin();
+  while (it1_ != it1.end() && it2_ != it2.end()) {
+    while (it1_.index2() < it2_.index2()) {
+      it1_++;
+      if (it1_ == it1.end())
+          goto out;
+    }
+    while (it2_.index2() < it1_.index2()) {
+      it2_++;
+      if (it2_ == it2.end())
+          goto out;
+    }
+    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
+      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
+      //cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
+      //    << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_ << endl;
+      *it1_++; *it2_++;
+    }
+  }
+out:
+  //cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;
+  return aggr::finalize(dist);
+}
+
 /*}}}*/
 /** distance matrix {{{ */
 template<distance_fun distFun>
@@ -428,7 +491,7 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_v
 }
 /**}}}*/
 
-/* eps neighbourhood {{{ */
+/* DBSCAN {{{ */
 /**
  * get the neighbours for a given distvector index within range eps, excluding the point itself.
  * Returned are the distvector indices.
@@ -500,6 +563,39 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 }
 
 /*}}}*/
+/* membership tests {{{*/
+template<class aggr>
+void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, std::vector<node_meta> &nodemetaout) {
+  std::vector<size_t> result_indizes;
+  nodemetaout.resize(test_data.size1());
+  for (size_t i = 0; i < test_data.size1(); ++i) {
+    for (size_t j = 0; j < data.size1(); ++j) {
+      double dist = distance_find_2<aggr>(test_data, i, data, j, featurescale);
+      if (dist <= eps) {
+        result_indizes.push_back(j);
+      }
+    }
+
+    map<string, size_t> occurences;
+    for (size_t j = 0; j < result_indizes.size(); ++j) {
+      string cl = nodemeta[result_indizes[j]].cluster;
+      occurences[cl]++;
+    }
+    if (!occurences.size()) {
+      nodemetaout[i].noise = true;
+    }
+    size_t cur_max = 0;
+    string cur_max_lbl;
+    for (std::map<string, size_t>::iterator it = occurences.begin(); it != occurences.end(); ++it) {
+      if (it->second > cur_max) {
+        cur_max_lbl = it->first;
+        cur_max = it->second;
+      }
+    }
+    nodemetaout[i].cluster = cur_max_lbl;
+  }
+} 
+/* }}} */
 /* trace code {{{ */
 
 std::vector<const char*> trace_points;
@@ -538,8 +634,8 @@ int main(int argc, char ** argv) {
     ("cluster-method,c", po::value<string>()->default_value("dbscan"), "Cluster method. Possible values are\n"
                                                                       "  dbscan - cluster using dbscan\n"
                                                                       "  file   - read labels from file\n")
-    ("labels,l", po::value<string>(), "labels file (required for --cluster-method file)")
-    ("test-membership", po::value<string>(), "test membership method, possible values:\n"
+    ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
+    ("test-membership", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
                                             "  no  - don't test membership\n"
                                             "  eps - use eps neighbourhood\n"
                                             "  k   - use k-nearest-neighbours")
@@ -604,6 +700,31 @@ int main(int argc, char ** argv) {
   double eps = vm["epsilon"].as<double>();
   size_t minpts = vm["minpts"].as<unsigned int>();
 
+  string test_membership = vm["test-membership"].as<string>();
+  int test_membership_k = 0;
+  double test_membership_eps = 0.0;
+  string test_membership_filename = "";
+
+  if (test_membership != "no") {
+    if (test_membership == "eps") {
+      if (!vm.count("test-parameter")) {
+        throw runtime_error("eps membership type requires a --test-parameter");
+      }
+      test_membership_eps = vm["test-parameter"].as<double>();
+    } else if (test_membership == "k") { 
+      if (!vm.count("test-parameter")) {
+        throw runtime_error("k-nearest-neighbours membership type requires a --test-parameter");
+      }
+      test_membership_k = (int)vm["test-parameter"].as<double>();
+    } else {
+      throw runtime_error("unsupported membership test type: " + test_membership);
+    }
+    if (!vm.count("test-file")) {
+      throw runtime_error("membership test requires --test-file");
+    }
+    test_membership_filename = vm["test-file"].as<string>();
+  }
+
   cout << "reading from " << infile << ", eps=" << eps <<", minpts=" << minpts << ", "
     << (use_triangle_inequality?"":"not") << " using triangle inequality, "
     << (use_feature_scaling?"":"not") << " using feature scaling." << endl;
@@ -640,9 +761,9 @@ int main(int argc, char ** argv) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.size1(); ++i) {
       if (norm == 1) {
-        reference_distances[i] = make_pair(distance_manual_cached<c_manhattan<int> >(data, 0, i, featurescale), i);
+        reference_distances[i] = make_pair(distance_find<c_manhattan<int> >(data, 0, i, featurescale), i);
       } else {
-        reference_distances[i] = make_pair(distance_manual_cached<c_euclid<int> >(data, 0, i, featurescale), i);
+        reference_distances[i] = make_pair(distance_find<c_euclid<int> >(data, 0, i, featurescale), i);
       }
       cout << reference_distances[i].first << " ";
     }
@@ -652,9 +773,9 @@ int main(int argc, char ** argv) {
   trace("create distancematrix");
   distancematrix_t distancematrix(data.size1(), data.size1());
   if (norm == 1) {
-    create_distance_matrix<distance_manual_cached<c_manhattan<int> > >(data, reference_distances, eps, featurescale, distancematrix);
+    create_distance_matrix<distance_find<c_manhattan<int> > >(data, reference_distances, eps, featurescale, distancematrix);
   } else {
-    create_distance_matrix<distance_manual_cached<c_euclid<int> > >(data, reference_distances, eps, featurescale, distancematrix);
+    create_distance_matrix<distance_find<c_euclid<int> > >(data, reference_distances, eps, featurescale, distancematrix);
   }
 
   trace("sort reference distances");
@@ -669,6 +790,26 @@ int main(int argc, char ** argv) {
   } else if (cluster_method == "file") {
     trace("label-load");
     load_file_clusters(label_file, metadata);
+  }
+
+  // Test membership if wanted
+  if (test_membership != "no") {
+    matrix_t test_data;
+    featurescale_t test_featurescale;
+    try {
+      if (filetype == "cluto") {
+        load_file_cluto(test_membership_filename, test_data, test_featurescale);
+      } else {
+        load_file_plain<datatype>(test_membership_filename, test_data, test_featurescale);
+      }
+    } catch (const runtime_error& e) {
+      cerr << "Error while loading test member ship data: " << e.what() << endl;
+      return 1;
+    }
+    
+    if (test_membership == "eps") {
+      //test_epsneighbourhood(data, test_data, reference_distances, test_membership_eps); 
+    }
   }
 
   trace("output");
