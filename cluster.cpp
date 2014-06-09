@@ -21,6 +21,12 @@
 #include <algorithm>
 #include <map> // pair
 
+#ifdef DEBUG
+#define DBG(x) x
+#else
+#define DBG(x)
+#endif
+
 using namespace std;
 using namespace boost::numeric::ublas;
 
@@ -389,13 +395,13 @@ double distance_find(matrix_t &m, long unsigned int row1, long unsigned int row2
     }
     if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
       dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
-      //cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
-      //    << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_ << endl;
+      DBG(cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
+          << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_  <<" / fs=" << featurescale[it1_.index2()] <<" = " << aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]) << endl;)
       *it1_++; *it2_++;
     }
   }
 out:
-  //cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;
+  DBG(cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;)
   return aggr::finalize(dist);
 }
 
@@ -421,13 +427,13 @@ double distance_find_2(matrix_t &m1, long unsigned int row1, matrix_t &m2, long 
     }
     if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
       dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
-      //cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
-      //    << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_ << endl;
+      DBG(cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
+          << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_  <<" / fs=" << featurescale[it1_.index2()] <<" = " << aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]) << endl;)
       *it1_++; *it2_++;
     }
   }
 out:
-  //cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;
+  DBG(cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;)
   return aggr::finalize(dist);
 }
 
@@ -437,7 +443,7 @@ template<distance_fun distFun>
 void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
   size_t ds1 = data.size1();
   for (size_t i = 0; i < ds1; ++i) {
-    cout << i << endl;
+    cout << "processing line #" << i << endl;
     for (size_t j = 0; j < i; ++j) {
       if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
         dst(i,j) = distFun(data, i, j, featurescale);
@@ -448,7 +454,11 @@ void create_distance_matrix(matrix_t &data, const distvector_t &reference_distan
 }
 
 double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
-  return dst(a,b);
+  double d = dst(a,b);
+  if (d == 0 && a != b) {
+    throw runtime_error("got 0 distance!");
+  }
+  return d;
 }
 /**}}}*/
 /** get_next {{{*/
@@ -459,7 +469,7 @@ double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
  *
  * returns  the index of the next row and the distance to it, or (UINT_MAX, 0.0) when the end of the array has been reached.
  */
-pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_value, size_t &lbound, size_t &rbound) {
+pair<unsigned int, double> get_next(const distvector_t &distvec, const double mid_value, size_t &lbound, size_t &rbound) {
   size_t veclen = distvec.size();
   if (veclen == 0 || ((lbound == 0) && (rbound >= veclen-1))) {
     return make_pair(UINT_MAX, 0.0);
@@ -480,11 +490,11 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_v
   // at the beginning of the function
   if (/*dist_r == DBL_MAX || */ dist_l <= dist_r) {
     lbound--;
-    return make_pair(distvec[lbound].second, dist_l);
+    return make_pair(lbound, dist_l);
   }
   if (/*dist_l == DBL_MAX || */ dist_r <= dist_l) {
     rbound++;
-    return make_pair(distvec[rbound].second, dist_r);
+    return make_pair(rbound, dist_r);
   }
 
   throw runtime_error("obligatory 'this should never happen'");
@@ -520,6 +530,7 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
   std::vector<size_t> neighbours;
   for (size_t i = 0; i < reference_distances.size(); ++i) {
     ssize_t obj_idx = reference_distances[i].second;
+    DBG(cout << ">processing " << obj_idx << " (" << (int)nodeinfo[obj_idx].visited <<", " << nodeinfo[obj_idx].cluster <<")" << endl;)
     // skip visited nodes
     if (nodeinfo[obj_idx].visited) {
       continue;
@@ -541,18 +552,18 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 
     nodeinfo[obj_idx].cluster = current_cluster_s;
     size_t current_cluster_size = 1;
-    cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
+    DBG( cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;)
     for (size_t j = 0; j < neighbours.size(); ++j) {
       size_t nb_obj_idx = reference_distances[neighbours[j]].second;
+      DBG(cout << "  processing " << nb_obj_idx << " (" << (int)nodeinfo[nb_obj_idx].visited <<", " << nodeinfo[nb_obj_idx].cluster <<")" << endl;)
       if (nodeinfo[nb_obj_idx].visited == false) {
         nodeinfo[nb_obj_idx].visited = true;
         std::vector<size_t> nneighbours;
         getneighbours(reference_distances, dsm, nneighbours, neighbours[j], eps);
-        if (nneighbours.size() >= minpts) {
+        if (nneighbours.size()+1 >= minpts) {
           neighbours.insert(neighbours.end(), nneighbours.begin(), nneighbours.end());
-          cout << "  Added " << nneighbours.size() << " new neighbours" << endl;
+          DBG(cout << "  Added " << nneighbours.size() << " new neighbours" << endl;)
         }
-
       }
       if (nodeinfo[nb_obj_idx].cluster == "") {
         nodeinfo[nb_obj_idx].cluster = current_cluster_s;
@@ -560,7 +571,7 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
         nodeinfo[nb_obj_idx].noise=false;
       }
     }
-    cout << "  Cluster size: " << current_cluster_size << endl;
+    DBG( cout << "  Cluster size: " << current_cluster_size << endl;)
   }
 }
 
@@ -767,9 +778,9 @@ int main(int argc, char ** argv) {
       } else {
         reference_distances[i] = make_pair(distance_find<c_euclid<int> >(data, 0, i, featurescale), i);
       }
-      cout << reference_distances[i].first << " ";
+      DBG(cout << reference_distances[i].first << " ";)
     }
-    cout << endl;
+    DBG(cout << endl;)
   } else {
     for (unsigned int i = 0; i < reference_distances.size(); ++i) {
       reference_distances[i] = make_pair(0.0, i);
