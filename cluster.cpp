@@ -24,10 +24,18 @@
 using namespace std;
 using namespace boost::numeric::ublas;
 
-typedef compressed_matrix<int> matrix_t;
+typedef int datatype; // TODO only int supported for now (atoi function calls) 
+typedef compressed_matrix<datatype> matrix_t;
 typedef symmetric_matrix<double> distancematrix_t; 
 typedef std::vector<pair<double, unsigned int> > distvector_t; 
-typedef std::vector<double> featurescale_t;
+typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
+
+struct node_meta {
+  node_meta() : cluster(""), visited(false), noise(false) { }
+  string cluster;
+  bool visited;
+  bool noise;
+};
 
 /* }}} */
 /* file import {{{ */
@@ -73,7 +81,7 @@ void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &fe
       next_tk = strtok(NULL, " ");
       int val = atoi(next_tk);
       out(row, idx-1) = val;
-      featurescale[idx-1] = max(featurescale[idx-1], (double)val);
+      featurescale[idx-1] = max((double)featurescale[idx-1], (double)val);
       next_tk = strtok(NULL, " ");
     }
     ++row;
@@ -109,7 +117,7 @@ void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &fe
       if (featurescale.size() <= idx) {
         featurescale.push_back(val);
       } else {
-        featurescale[idx] = max(featurescale[idx], (double)val);
+        featurescale[idx] = max((double)featurescale[idx], (double)val);
       }
       idx++;
       next_tk = strtok(NULL, " ");
@@ -133,6 +141,42 @@ void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &fe
     }
   }
 }
+
+void load_file_clusters(const std::string filename, std::vector<node_meta>& nodeinfo) {
+  FILE *fp;
+  char * line = NULL;
+  size_t len = 0;
+  ssize_t read;
+
+  fp = fopen(filename.c_str(), "r");
+  if (fp == NULL) {
+    throw runtime_error("Could not open cluster label file " + filename);
+  }
+
+  unsigned int row = 0;
+
+  while ((read = getline(&line, &len, fp)) != -1)  {
+    // remove trailing whitespace
+    size_t offset = strlen(line);
+    while (offset-- > 0) {
+      if (isspace(line[offset])) {
+        line[offset] = '\0';
+      }
+    }
+    if (!strlen(line)) {
+      throw runtime_error("Empty line in cluster label file: #" + boost::lexical_cast<string>(row));
+    }
+    if (nodeinfo.size() <= row) {
+      throw runtime_error("Too many rows in cluster label file");
+    }
+    nodeinfo[row].cluster = string(line);
+    row++;
+  }
+  if (row != nodeinfo.size()) {
+    throw runtime_error("Too few lines in cluster label file");
+  }
+}
+
 /* }}} */
 /* distance implementations {{{ */
 
@@ -325,12 +369,6 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const int mid_v
   throw runtime_error("obligatory 'this should never happen'");
 }
 /**}}}*/
-struct node_meta {
-  node_meta() : cluster(UINT_MAX), visited(false), noise(false) { }
-  unsigned int cluster;
-  bool visited;
-  bool noise;
-};
 
 /* eps neighbourhood {{{ */
 /**
@@ -356,7 +394,7 @@ void getneighbours(const distvector_t &reference_distances, const distancematrix
   }
 }
 
-void epsneighbourhood(const distvector_t &reference_distances, const distancematrix_t &dsm, double eps, size_t minpts, std::vector<node_meta>& nodeinfo) {
+void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm, double eps, size_t minpts, std::vector<node_meta>& nodeinfo) {
   int current_cluster = -1;
   std::vector<size_t> neighbours;
   for (size_t i = 0; i < reference_distances.size(); ++i) {
@@ -378,8 +416,9 @@ void epsneighbourhood(const distvector_t &reference_distances, const distancemat
     }
 
     current_cluster++;
+    string current_cluster_s = boost::lexical_cast<string>(current_cluster);
     
-    nodeinfo[obj_idx].cluster = current_cluster;
+    nodeinfo[obj_idx].cluster = current_cluster_s;
     size_t current_cluster_size = 1;
     cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
     for (size_t j = 0; j < neighbours.size(); ++j) {
@@ -393,8 +432,8 @@ void epsneighbourhood(const distvector_t &reference_distances, const distancemat
           cout << "  Added " << nneighbours.size() << " new neighbours" << endl;
         }
       }
-      if (nodeinfo[nb_obj_idx].cluster == UINT_MAX) {
-        nodeinfo[nb_obj_idx].cluster = current_cluster;
+      if (nodeinfo[nb_obj_idx].cluster == "") {
+        nodeinfo[nb_obj_idx].cluster = current_cluster_s;
         current_cluster_size++;
       }
     }
@@ -438,6 +477,16 @@ int main(int argc, char ** argv) {
                                                                   "  cluto - CLUTO file format (sparse)\n"
                                                                   "  plain - space seperated features, each in a new line.")
     ("norm,n", po::value<int>()->default_value(1), "norm to use (1 or 2)")
+    ("cluster-method,c", po::value<string>()->default_value("dbscan"), "Cluster method. Possible values are\n"
+                                                                      "  dbscan - cluster using dbscan\n"
+                                                                      "  file   - read labels from file\n")
+    ("labels,l", po::value<string>(), "labels file (required for --cluster-method file)")
+    ("test-membership", po::value<string>(), "test membership method, possible values:\n"
+                                            "  no  - don't test membership\n"
+                                            "  eps - use eps neighbourhood\n"
+                                            "  k   - use k-nearest-neighbours")
+    ("test-file", po::value<string>(), "file to read membership test values from")
+    ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
   ;
 
   po::positional_options_description p;
@@ -472,6 +521,21 @@ int main(int argc, char ** argv) {
   const int norm = vm["norm"].as<int>();
   if (norm != 1 && norm != 2) {
     cerr << "Only norms 1 or 2 are supported" << endl;
+    cerr << desc << endl;
+    return 1;
+  }
+
+  const string cluster_method = vm["cluster-method"].as<string>();
+  string label_file;
+  if (cluster_method == "file") {
+    if (!vm.count("labels")) {
+      cerr << "Error: --cluster-method=file requires a --labels file" << endl;
+      cerr << desc << endl;
+      return 1;
+    }
+    label_file = vm["labels"].as<string>();
+  } else if (cluster_method != "dbscan") {
+    cerr << "Error: invalid value for --cluster-method" << endl;
     cerr << desc << endl;
     return 1;
   }
@@ -540,14 +604,19 @@ int main(int argc, char ** argv) {
     sort(reference_distances.begin(), reference_distances.end());
   }
 
-  trace("clustering");
   std::vector<node_meta> metadata(data.size1());
-  epsneighbourhood(reference_distances, distancematrix, eps, minpts, metadata);
+  if (cluster_method == "dbscan") {
+    trace("DBSCAN");
+    dbscan(reference_distances, distancematrix, eps, minpts, metadata);
+  } else if (cluster_method == "file") {
+    trace("label-load");
+    load_file_clusters(label_file, metadata);
+  }
 
   trace("output");
   FILE *f = fopen("cluster.out", "w");
   for (size_t i = 0; i < metadata.size(); ++i) {
-    fprintf(f, "%u%s\n", metadata[i].cluster, metadata[i].noise?" (noise)":"");
+    fprintf(f, "%s%s\n", metadata[i].cluster.c_str(), metadata[i].noise?" (noise)":"");
   }
   fclose(f);
 
