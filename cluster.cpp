@@ -354,6 +354,7 @@ void dump_trace() {
 
 /* }}} */
 
+
 int main(int argc, char ** argv) {
   string infile;
   if (argc < 2) {
