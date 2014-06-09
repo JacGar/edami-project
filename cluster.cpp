@@ -1,3 +1,4 @@
+/* includes and definitions {{{*/
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -28,11 +29,9 @@ typedef symmetric_matrix<double> distancematrix_t;
 typedef std::vector<pair<double, unsigned int> > distvector_t; 
 typedef std::vector<double> featurescale_t;
 
-void usage(const char * argv0) {
-  cerr << "Usage: " << argv0 << " <infile>" << endl;
-}
-
+/* }}} */
 /* file import {{{ */
+
 void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) { 
   FILE *fp;
   char * line = NULL;
@@ -95,13 +94,6 @@ void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &fe
   if (fp == NULL) {
     throw runtime_error("Could not open file " + infilename);
   }
-
-  read = getline(&line, &len, fp);
-
-  if (read == -1) {
-    throw runtime_error("Could not read file (empty?)");
-  }
-
 
   unsigned int row = 0;
   std::vector<std::vector<dtype> > data;
@@ -207,7 +199,29 @@ out:
   return dist;
 }
 
-double manhattan_distance_manual_cached(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
+template<class T>
+struct c_euclid {
+  static inline double aggregate(T a, T b, double fscl) {
+    double dist = a*b/fscl;
+    return dist*dist;
+  }
+  static inline double finalize(double dist) {
+    return sqrt(dist);
+  }
+};
+
+template<class T>
+struct c_manhattan {
+  static inline double aggregate(T a, T b, double fscl) {
+    return fabs(a-b)/fscl;
+  }
+  static inline double finalize(double dist) {
+    return dist;
+  }
+};
+
+template<class aggr>
+double distance_manual_cached(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
   // this takes about 0.58 sec
   // for the brave: changing anything about the matrix m might yield an invalid iterators, and crashes.
   // this is a sort of workaround fr the fact that we cannot access rows directly, by caching
@@ -244,19 +258,12 @@ double manhattan_distance_manual_cached(matrix_t &m, long unsigned int row1, lon
           goto out;
     }
     if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
-      // Manhattan:
-       dist += fabs(*it1_ - *it2_)/featurescale[it1_.index2()];
-      // Euclidean:
-      // double dist_t = (*it1_ - *it2_)/featurescale[it1_.index2()];
-      //dist += dist_t*dist_t;
-      it2_++; it1_++;
+      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
+      *it1_++; *it2_++;
     }
   }
 out:
-  // manhattan:
-  return dist;
-  // eucledian:
-  //return sqrt(dist);
+  return aggr::finalize(dist);
 }
 
 /*}}}*/
@@ -375,7 +382,7 @@ void epsneighbourhood(const distvector_t &reference_distances, const distancemat
     nodeinfo[obj_idx].cluster = current_cluster;
     size_t current_cluster_size = 1;
     cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
-    for (size_t j = 0; j < reference_distances.size(); ++j) {
+    for (size_t j = 0; j < neighbours.size(); ++j) {
       size_t nb_obj_idx = reference_distances[neighbours[j]].second;
       if (nodeinfo[nb_obj_idx].visited == false) {
         nodeinfo[nb_obj_idx].visited = true;
@@ -430,6 +437,7 @@ int main(int argc, char ** argv) {
     ("input-type,t", po::value<string>()->default_value("cluto"), "File type of the input file. Possible values are:\n"
                                                                   "  cluto - CLUTO file format (sparse)\n"
                                                                   "  plain - space seperated features, each in a new line.")
+    ("norm,n", po::value<int>()->default_value(1), "norm to use (1 or 2)")
   ;
 
   po::positional_options_description p;
@@ -458,6 +466,13 @@ int main(int argc, char ** argv) {
   if (!vm.count("input-file")) {
     cerr << "Error: input file required." << endl;
     cout << desc << endl;
+    return 1;
+  }
+
+  const int norm = vm["norm"].as<int>();
+  if (norm != 1 && norm != 2) {
+    cerr << "Only norms 1 or 2 are supported" << endl;
+    cerr << desc << endl;
     return 1;
   }
 
@@ -502,15 +517,23 @@ int main(int argc, char ** argv) {
   if (use_triangle_inequality) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.size1(); ++i) {
-      reference_distances[i] = make_pair(manhattan_distance_manual_cached(data, 0, i, featurescale), i);
+      if (norm == 1) {
+        reference_distances[i] = make_pair(distance_manual_cached<c_manhattan<int> >(data, 0, i, featurescale), i);
+      } else {
+        reference_distances[i] = make_pair(distance_manual_cached<c_euclid<int> >(data, 0, i, featurescale), i); 
+      }
       cout << reference_distances[i].first << " ";
     }
+    cout << endl;
   }
   
   trace("create distancematrix");
   distancematrix_t distancematrix(data.size1(), data.size1());
-  create_distance_matrix<manhattan_distance_manual_cached>(data, reference_distances, eps, featurescale, distancematrix);
-
+  if (norm == 1) {
+    create_distance_matrix<distance_manual_cached<c_manhattan<int> > >(data, reference_distances, eps, featurescale, distancematrix);
+  } else {
+    create_distance_matrix<distance_manual_cached<c_euclid<int> > >(data, reference_distances, eps, featurescale, distancematrix); 
+  }
   
   trace("sort reference distances");
   if (use_triangle_inequality) {
