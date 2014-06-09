@@ -770,6 +770,10 @@ int main(int argc, char ** argv) {
       cout << reference_distances[i].first << " ";
     }
     cout << endl;
+  } else {
+    for (unsigned int i = 0; i < reference_distances.size(); ++i) {
+      reference_distances[i] = make_pair(0.0, i);
+    }
   }
 
   trace("create distancematrix");
@@ -814,10 +818,30 @@ int main(int argc, char ** argv) {
     }
   }
 
+
+
   trace("output");
+  {
   FILE *f = fopen("cluster.out", "w");
   for (size_t i = 0; i < metadata.size(); ++i) {
     fprintf(f, "%s%s\n", metadata[i].cluster.c_str(), metadata[i].noise?" (noise)":"");
+  }
+  fclose(f);
+  }
+
+  FILE *f = fopen("distmatrix.out", "w");
+  bool first;
+  for (size_t i = 0; i < distancematrix.size1(); ++i) {
+    first = true;
+    for (size_t j = 0; j < distancematrix.size2(); ++j) {
+      if (first) {
+        fprintf(f, "%f", distancematrix(i,j));
+        first = false;
+      } else {
+        fprintf(f, " %f", distancematrix(i,j));
+      }
+    }
+    fputs("\n", f);
   }
   fclose(f);
 
