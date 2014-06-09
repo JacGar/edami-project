@@ -25,14 +25,70 @@ using namespace std;
 using namespace boost::numeric::ublas;
 
 typedef compressed_matrix<int> matrix_t;
-typedef symmetric_matrix<double> distancematrix_t; 
-typedef std::vector<pair<double, unsigned int> > distvector_t; 
+typedef symmetric_matrix<double> distancematrix_t;
+typedef std::vector<pair<double, unsigned int> > distvector_t;
 typedef std::vector<double> featurescale_t;
 
 /* }}} */
+
+#ifdef _WIN32
+/* This code is public domain -- Will Hartung 4/9/09 */
+size_t getline(char **lineptr, size_t *n, FILE *stream) {
+    char *bufptr = NULL;
+    char *p = bufptr;
+    size_t size;
+    int c;
+
+    if (lineptr == NULL) {
+    	return -1;
+    }
+    if (stream == NULL) {
+    	return -1;
+    }
+    if (n == NULL) {
+    	return -1;
+    }
+    bufptr = *lineptr;
+    size = *n;
+
+    c = fgetc(stream);
+    if (c == EOF) {
+    	return -1;
+    }
+    if (bufptr == NULL) {
+    	bufptr = (char*)malloc(128);
+    	if (bufptr == NULL) {
+    		return -1;
+    	}
+    	size = 128;
+    }
+    p = bufptr;
+    while(c != EOF) {
+    	if ((p - bufptr) > (size - 1)) {
+    		size = size + 128;
+    		bufptr = (char*)realloc(bufptr, size);
+    		if (bufptr == NULL) {
+    			return -1;
+    		}
+    	}
+    	*p++ = c;
+    	if (c == '\n') {
+    		break;
+    	}
+    	c = fgetc(stream);
+    }
+
+    *p++ = '\0';
+    *lineptr = bufptr;
+    *n = size;
+
+    return p - bufptr - 1;
+}
+
+
 /* file import {{{ */
 
-void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) { 
+void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
   FILE *fp;
   char * line = NULL;
   size_t len = 0;
@@ -80,8 +136,10 @@ void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &fe
   }
 }
 
+#endif
+
 template<typename dtype>
-void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &featurescale) { 
+void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
   // this function reads a dense matrix into a sparse filetype, until i can figure out if there
   // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
   // both using the sparse datatype and the actual "read" implementation used here.
@@ -105,7 +163,7 @@ void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &fe
     while (next_tk) {
       dtype val = atoi(next_tk);
       inner.push_back(val);
-      
+
       if (featurescale.size() <= idx) {
         featurescale.push_back(val);
       } else {
@@ -237,7 +295,7 @@ double distance_manual_cached(matrix_t &m, long unsigned int row1, long unsigned
   matrix_t::const_iterator1 &it1 = *it1_c;
   matrix_t::const_iterator1 &it2 = *it2_c;
 
-  // move the iterator to the correct position. 
+  // move the iterator to the correct position.
   while (pos1 > row1) { it1--; pos1--; }
   while (pos1 < row1) { if (it1 == m.end1()) break; it1++; pos1++; }
   while (pos2 > row2) { it2--; pos2--; }
@@ -378,7 +436,7 @@ void epsneighbourhood(const distvector_t &reference_distances, const distancemat
     }
 
     current_cluster++;
-    
+
     nodeinfo[obj_idx].cluster = current_cluster;
     size_t current_cluster_size = 1;
     cout << "Expanding cluster " << current_cluster << " with " << neighbours.size() << " neighbours:" << endl;
@@ -482,7 +540,7 @@ int main(int argc, char ** argv) {
   double eps = vm["epsilon"].as<double>();
   size_t minpts = vm["minpts"].as<unsigned int>();
 
-  cout << "reading from " << infile << ", eps=" << eps <<", minpts=" << minpts << ", " 
+  cout << "reading from " << infile << ", eps=" << eps <<", minpts=" << minpts << ", "
     << (use_triangle_inequality?"":"not") << " using triangle inequality, "
     << (use_feature_scaling?"":"not") << " using feature scaling." << endl;
 
@@ -513,28 +571,28 @@ int main(int argc, char ** argv) {
   // basepoints for triangle inequality
   distvector_t reference_distances;
   reference_distances.resize(data.size1());
-  
+
   if (use_triangle_inequality) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.size1(); ++i) {
       if (norm == 1) {
         reference_distances[i] = make_pair(distance_manual_cached<c_manhattan<int> >(data, 0, i, featurescale), i);
       } else {
-        reference_distances[i] = make_pair(distance_manual_cached<c_euclid<int> >(data, 0, i, featurescale), i); 
+        reference_distances[i] = make_pair(distance_manual_cached<c_euclid<int> >(data, 0, i, featurescale), i);
       }
       cout << reference_distances[i].first << " ";
     }
     cout << endl;
   }
-  
+
   trace("create distancematrix");
   distancematrix_t distancematrix(data.size1(), data.size1());
   if (norm == 1) {
     create_distance_matrix<distance_manual_cached<c_manhattan<int> > >(data, reference_distances, eps, featurescale, distancematrix);
   } else {
-    create_distance_matrix<distance_manual_cached<c_euclid<int> > >(data, reference_distances, eps, featurescale, distancematrix); 
+    create_distance_matrix<distance_manual_cached<c_euclid<int> > >(data, reference_distances, eps, featurescale, distancematrix);
   }
-  
+
   trace("sort reference distances");
   if (use_triangle_inequality) {
     sort(reference_distances.begin(), reference_distances.end());
