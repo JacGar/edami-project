@@ -30,8 +30,81 @@
 using namespace std;
 using namespace boost::numeric::ublas;
 
+template <class T>
+class slowmatrix {
+  /** class to work around some horrible boost::numeric::ublas problems */
+  typedef std::vector<map<size_t, T> > contents_type;
+  contents_type contents;
+  size_t ncols;
+public:
+  class iterator2 : public map<size_t, T>::iterator {
+      size_t row;
+    public:
+      void setRow(size_t n) { row = n; };
+      size_t index1() const { return row; }
+      size_t index2() const { return this->first; }
+      T& operator*() const { return this->second; } 
+  };
+  typedef iterator2 const_iterator2;
+
+  class iterator1 : public contents_type::iterator {
+    std::vector<map<size_t, int> > beg_;
+    public:
+    void setVecBegin(const std::vector<map<size_t, int> >::iterator beg) {
+      beg_ = beg;
+    }
+    iterator2 begin() {
+      iterator2 n = this->begin(); 
+      n.setRow(*this - beg_);
+      return n;
+    }
+    iterator2 end() {
+      iterator2 n = this->end();
+      n.setRow(*this - beg_);
+      return n;
+    }
+
+  };
+
+  typedef iterator1 const_iterator1;
+    slowmatrix() : ncols(0), contents(0) { };
+    slowmatrix(size_t nrows, size_t ncols, size_t /* nelem */) : ncols(ncols), contents(nrows) {};
+
+    void resize(size_t nrows, size_t ncols_, size_t optional = 0) {
+      contents.resize(nrows);
+      ncols = ncols_;
+    }
+
+    T& operator()(size_t row, size_t col) {
+      if (row > contents.size()) {
+        throw std::runtime_error("row out of bounds");
+      }
+      if (col > ncols) {
+        throw std::runtime_error("col out of bounds");
+      } 
+      return contents[row][col];
+    }
+
+    size_t size1() {
+      return contents.size();
+    }
+
+    size_t size2() {
+      return ncols;
+    }
+
+    iterator1 begin1() {
+      return iterator1(contents.begin());
+    }
+
+    iterator1 end1() {
+      return iterator1(contents.end());
+    }
+};
+
 typedef int datatype; // TODO only int supported for now (atoi function calls)
-typedef compressed_matrix<datatype> matrix_t;
+//typedef compressed_matrix<datatype> matrix_t;
+typedef slowmatrix<datatype> matrix_t;
 typedef symmetric_matrix<double> distancematrix_t;
 typedef std::vector<pair<double, unsigned int> > distvector_t;
 typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
@@ -245,6 +318,7 @@ void load_file_clusters(const std::string filename, std::vector<node_meta>& node
 
 typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
 
+/*
 double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
     // 45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
@@ -276,7 +350,7 @@ double eucledian_distance_builtin_2(matrix_t &m, long unsigned int row1, matrix_
     boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m2, row2);
     return norm_2(row1_proxy - row2_proxy);
 }
-
+*/
 double manhattan_distance_manual(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
   // about 18 seconds for n rows. Adding const does not yield any improvement.
   // is there a way to access rows directly, not with this fucking magic thing?
