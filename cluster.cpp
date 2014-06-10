@@ -273,7 +273,7 @@ double eucledian_distance_builtin(matrix_t &m, long unsigned int row1, long unsi
 double eucledian_distance_builtin_2(matrix_t &m, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t &featurescale) {
     // 0.45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
-    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
+    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m2, row2);
     return norm_2(row1_proxy - row2_proxy);
 }
 
@@ -381,6 +381,52 @@ out:
 }
 
 template<class aggr>
+double distance_manual_cached_2(matrix_t &m, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t& featurescale) {
+  // this takes about 0.58 sec
+  // for the brave: changing anything about the matrix m might yield an invalid iterators, and crashes.
+  // this is a sort of workaround fr the fact that we cannot access rows directly, by caching
+  // the iterators. This, of course, assumes that the matrix m never changes, either it's values or
+  // its position in the memory.
+  static matrix_t::const_iterator1 *it1_c = NULL, *it2_c = NULL;
+  static long unsigned int pos1, pos2;
+  if (it1_c == NULL || it2_c == NULL) {
+    it1_c = new matrix_t::const_iterator1(m.begin1());
+    it2_c = new matrix_t::const_iterator1(m2.begin1());
+    pos1 = pos2 = 0;
+  }
+  matrix_t::const_iterator1 &it1 = *it1_c;
+  matrix_t::const_iterator1 &it2 = *it2_c;
+
+  // move the iterator to the correct position.
+  while (pos1 > row1) { it1--; pos1--; }
+  while (pos1 < row1) { if (it1 == m.end1()) break; it1++; pos1++; }
+  while (pos2 > row2) { it2--; pos2--; }
+  while (pos2 < row2) { if (it2 == m.end1()) break; it2++; pos2++; }
+
+  double dist = 0;
+  matrix_t::const_iterator2 it1_ = it1.begin();
+  matrix_t::const_iterator2 it2_ = it2.begin();
+  while (it1_ != it1.end() && it2_ != it2.end()) {
+    while (it1_.index2() < it2_.index2()) {
+      it1_++;
+      if (it1_ == it1.end())
+          goto out;
+    }
+    while (it2_.index2() < it1_.index2()) {
+      it2_++;
+      if (it2_ == it2.end())
+          goto out;
+    }
+    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
+      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
+      *it1_++; *it2_++;
+    }
+  }
+out:
+  return aggr::finalize(dist);
+}
+
+template<class aggr>
 double distance_find(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
 
   matrix_t::const_iterator1 it1 = m.find1(1, row1, 0);
@@ -418,9 +464,15 @@ double distance_find_2(matrix_t &m1, long unsigned int row1, matrix_t &m2, long 
   matrix_t::const_iterator1 it1 = m1.find1(1, row1, 0);
   matrix_t::const_iterator1 it2 = m2.find1(1, row2, 0);
 
+  matrix_t::const_iterator2 it1_, it2_;
   double dist = 0;
-  matrix_t::const_iterator2 it1_ = it1.begin();
-  matrix_t::const_iterator2 it2_ = it2.begin();
+  try {
+    it1_ = it1.begin();
+    it2_ = it2.begin();
+  } catch (...) {
+    cerr << it1.index1() << " " << it1.index2() << " " << it2.index1() << " " << it2.index2() << endl;
+    throw;
+  }
   while (it1_ != it1.end() && it2_ != it2.end()) {
     while (it1_.index2() < it2_.index2()) {
       it1_++;
@@ -585,12 +637,20 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 /*}}}*/
 /* membership tests {{{*/
 template<class aggr>
-void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, std::vector<node_meta> &nodemetaout) {
+void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances_unsorted, size_t reference_point, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, std::vector<node_meta> &nodemetaout) {
   std::vector<size_t> result_indizes;
   nodemetaout.resize(test_data.size1());
   for (size_t i = 0; i < test_data.size1(); ++i) {
+    double testpoint_to_reference = 0;
+    //if (reference_distances_unsorted.size()) {
+    //   testpoint_to_reference = distance_manual_cached_2<aggr>(data, reference_point, test_data, i, featurescale);
+    //}
+
     for (size_t j = 0; j < data.size1(); ++j) {
-      double dist = eucledian_distance_builtin_2(test_data, i, data, j, featurescale);
+      if (fabs(reference_distances_unsorted[j].first - testpoint_to_reference) <= eps) {
+        continue;
+      }
+      double dist = distance_find_2<aggr>(data, j, test_data, i, featurescale);
       if (dist <= eps) {
         result_indizes.push_back(j);
       }
@@ -812,6 +872,11 @@ int run_clusterer(const options& o) {
   create_distance_matrix<distance_manual_cached<norm_aggregator> >(data, reference_distances, o.eps, featurescale, distancematrix);
 
   trace("sort reference distances");
+  
+  distvector_t reference_distances_unsorted;
+  if (o.test_membership != "no") {
+    reference_distances_unsorted = reference_distances;
+  }
   if (o.use_triangle_inequality) {
     sort(reference_distances.begin(), reference_distances.end());
   }
@@ -844,7 +909,7 @@ int run_clusterer(const options& o) {
     
     std::vector<node_meta> nodemetaout;
     if (o.test_membership == "eps") {
-      test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata, o.test_membership_eps, nodemetaout); 
+      test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances_unsorted, 0, featurescale, metadata, o.test_membership_eps, nodemetaout); 
     }
 
     {
