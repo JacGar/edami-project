@@ -615,6 +615,68 @@ void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& re
     nodemetaout[i].cluster = cur_max_lbl;
   }
 } 
+
+template<class aggr>
+void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, size_t k, std::vector<node_meta> &nodemetaout) {
+  /* TODO triangle inequality:
+   * for (t test_data) {
+   *   this_ref_distance = distance(reference_point, t);
+   *   distvector_t result_indizes(k);
+   *   for (d = getnext(data)) {
+   *     if (fabs(reference_distances(d)-this_ref_distance) > eps)
+   *       break;
+   *     real_dist = distance(t, d);
+   *     if (real_dist < result_indizes[result_indizes.size()-1].first) {
+   *       result_indizes[result_indizes.size()-1] = make_pair(real_dist, d)
+   *       sort(result_indizes.begin(), result_indizes.end());
+   *     }
+   *   } // rest as below
+   * }
+   */
+  distvector_t result_indizes;
+  nodemetaout.resize(test_data.size1());
+  for (size_t i = 0; i < test_data.size1(); ++i) {
+    result_indizes.clear();
+    for (size_t j = 0; j < data.size1(); ++j) {
+      double dist = eucledian_distance_builtin_2(test_data, i, data, j, featurescale);
+      result_indizes.push_back(make_pair(dist, j));
+    }
+
+    sort(result_indizes.begin(), result_indizes.end());
+    size_t cur_max = 0;
+    string cur_max_lbl;
+
+    map<string, size_t> occurences;
+    for (size_t j = 0; j < result_indizes.size() && j < k; ++j) {
+      string cl = nodemeta[result_indizes[j].second].cluster;
+      occurences[cl]++;
+      if (j < k && j+1 < result_indizes.size()) {
+        continue;
+      }
+      std::vector<ssize_t> hist;
+      for (std::map<string, size_t>::iterator it = occurences.begin(); it != occurences.end(); ++it) {
+        hist.push_back(it->second);
+      }
+      if (hist.size() < 2)
+        break;
+      sort(hist.begin(), hist.end());
+      if (hist[hist.size()-2] != hist[hist.size()-1]) {
+        break;
+      }
+    }
+
+    for (std::map<string, size_t>::iterator it = occurences.begin(); it != occurences.end(); ++it) {
+      if (it->second > cur_max) {
+        cur_max_lbl = it->first;
+        cur_max = it->second;
+      }
+    }
+    if (!occurences.size()) {
+      nodemetaout[i].noise = true;
+    }
+    nodemetaout[i].cluster = cur_max_lbl;
+  }
+} 
 /* }}} */
 /* trace code {{{ */
 
@@ -829,6 +891,7 @@ int run_clusterer(const options& o) {
 
   // Test membership if wanted
   if (o.test_membership != "no") {
+    trace("loading test file");
     matrix_t test_data;
     featurescale_t test_featurescale;
     try {
@@ -842,13 +905,16 @@ int run_clusterer(const options& o) {
       return 1;
     }
     
+    trace("testing membership");
     std::vector<node_meta> nodemetaout;
     if (o.test_membership == "eps") {
       test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata, o.test_membership_eps, nodemetaout); 
+    } else {
+      test_knneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata, o.test_membership_k, nodemetaout); 
     }
 
     {
-      FILE *f = fopen("test.out", "w");
+      FILE *f = fopen("membership.out", "w");
       for (size_t i = 0; i < nodemetaout.size(); ++i) {
         fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
       }
