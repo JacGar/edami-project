@@ -1,4 +1,6 @@
 #!/bin/bash
+# takes a CLUTO sparse matrix and the associated .rclass file, takes N random
+# samples out of it and saves it to the OUTPUT file. (This does not update n_elements)
 INPUT=sports
 OUTPUT=sports_random
 N=1000
