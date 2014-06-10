@@ -125,7 +125,7 @@ void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &fe
   tk = strtok(NULL, " ");
   ncols = atoi(tk);
   tk = strtok(NULL, " ");
-  if (strlen(tk) <= 1) {
+  if (tk == NULL || strlen(tk) <= 1) {
     throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
   }
 
@@ -264,6 +264,13 @@ double manhattan_distance_builtin(matrix_t &m, long unsigned int row1, long unsi
 }
 
 double eucledian_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t &featurescale) {
+    // 0.45 seconds for n rows
+    boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
+    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
+    return norm_2(row1_proxy - row2_proxy);
+}
+
+double eucledian_distance_builtin_2(matrix_t &m, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t &featurescale) {
     // 0.45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
     boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
@@ -583,7 +590,7 @@ void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& re
   nodemetaout.resize(test_data.size1());
   for (size_t i = 0; i < test_data.size1(); ++i) {
     for (size_t j = 0; j < data.size1(); ++j) {
-      double dist = distance_find_2<aggr>(test_data, i, data, j, featurescale);
+      double dist = eucledian_distance_builtin_2(test_data, i, data, j, featurescale);
       if (dist <= eps) {
         result_indizes.push_back(j);
       }
@@ -627,133 +634,147 @@ void dump_trace() {
 }
 
 /* }}} */
-
+/* init code {{{ */
 namespace po = boost::program_options;
 
-int main(int argc, char ** argv) {
+class options {
+  public:
+    bool use_triangle_inequality;
+    bool use_feature_scaling ;
+    int norm;
+    string cluster_method;
+    string filetype;
+    string infile;
+    double eps;
+    size_t minpts;
+    string test_membership;
+    int test_membership_k;
+    double test_membership_eps;
+    string test_membership_filename;
+    string label_file;
 
-  po::options_description desc("program options");
-  desc.add_options()
-    ("help,h", "show usage")
-    ("epsilon,e", po::value<double>()->default_value(0.5), "epsilon")
-    ("minpts,m", po::value<unsigned int>()->default_value(10), "minimum number of points to form a cluster")
-    ("no-triangle-inequality,T", "don't use triangle inequality")
-    ("scale,s", "use feature scaling")
-    ("input-file", "input file")
-    ("input-type,t", po::value<string>()->default_value("cluto"), "File type of the input file. Possible values are:\n"
-                                                                  "  cluto - CLUTO file format (sparse)\n"
-                                                                  "  plain - space seperated features, each in a new line.")
-    ("norm,n", po::value<int>()->default_value(1), "norm to use (1 or 2)")
-    ("cluster-method,c", po::value<string>()->default_value("dbscan"), "Cluster method. Possible values are\n"
-                                                                      "  dbscan - cluster using dbscan\n"
-                                                                      "  file   - read labels from file\n")
-    ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
-    ("test-membership", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
-                                            "  no  - don't test membership\n"
-                                            "  eps - use eps neighbourhood\n"
-                                            "  k   - use k-nearest-neighbours")
-    ("test-file", po::value<string>(), "file to read membership test values from")
-    ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
-  ;
-
-  po::positional_options_description p;
-  p.add("input-file", 1);
-
-  po::variables_map vm;
-  po::store(po::command_line_parser(argc, argv).options(desc).positional(p).run(), vm);
-  po::notify(vm);
-
-  if (vm.count("help")) {
-    cout << desc << endl;
-    return 1;
-  }
-
-  bool use_triangle_inequality = true;
-  bool use_feature_scaling = false;
-
-  if (vm.count("no-triangle-inequality")) {
-    use_triangle_inequality = false;
-  }
-
-  if (vm.count("scale")) {
-    use_feature_scaling = true;
-  }
-
-  if (!vm.count("input-file")) {
-    cerr << "Error: input file required." << endl;
-    cout << desc << endl;
-    return 1;
-  }
-
-  const int norm = vm["norm"].as<int>();
-  if (norm != 1 && norm != 2) {
-    cerr << "Only norms 1 or 2 are supported" << endl;
-    cerr << desc << endl;
-    return 1;
-  }
-
-  const string cluster_method = vm["cluster-method"].as<string>();
-  string label_file;
-  if (cluster_method == "file") {
-    if (!vm.count("labels")) {
-      cerr << "Error: --cluster-method=file requires a --labels file" << endl;
-      cerr << desc << endl;
-      return 1;
+    options() {
+      use_triangle_inequality = true;
+      use_feature_scaling = false;
     }
-    label_file = vm["labels"].as<string>();
-  } else if (cluster_method != "dbscan") {
-    cerr << "Error: invalid value for --cluster-method" << endl;
-    cerr << desc << endl;
-    return 1;
-  }
+    int init(int argc, char ** argv) { 
+      po::options_description desc("program options");
+      desc.add_options()
+        ("help,h", "show usage")
+        ("epsilon,e", po::value<double>()->default_value(0.5), "epsilon")
+        ("minpts,m", po::value<unsigned int>()->default_value(10), "minimum number of points to form a cluster")
+        ("no-triangle-inequality,T", "don't use triangle inequality")
+        ("scale,s", "use feature scaling")
+        ("input-file", "input file")
+        ("input-type,t", po::value<string>()->default_value("cluto"), "File type of the input file. Possible values are:\n"
+                                                                      "  cluto - CLUTO file format (sparse)\n"
+                                                                      "  plain - space seperated features, each in a new line.")
+        ("norm,n", po::value<int>()->default_value(1), "norm to use (1 or 2)")
+        ("cluster-method,c", po::value<string>()->default_value("dbscan"), "Cluster method. Possible values are\n"
+                                                                          "  dbscan - cluster using dbscan\n"
+                                                                          "  file   - read labels from file\n")
+        ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
+        ("test-membership", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
+                                                "  no  - don't test membership\n"
+                                                "  eps - use eps neighbourhood\n"
+                                                "  k   - use k-nearest-neighbours")
+        ("test-file", po::value<string>(), "file to read membership test values from")
+        ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
+      ;
 
-  string filetype = vm["input-type"].as<string>();
+      po::positional_options_description p;
+      p.add("input-file", 1);
 
-  string infile = vm["input-file"].as<string>();
-  double eps = vm["epsilon"].as<double>();
-  size_t minpts = vm["minpts"].as<unsigned int>();
+      po::variables_map vm;
+      po::store(po::command_line_parser(argc, argv).options(desc).positional(p).run(), vm);
+      po::notify(vm);
 
-  string test_membership = vm["test-membership"].as<string>();
-  int test_membership_k = 0;
-  double test_membership_eps = 0.0;
-  string test_membership_filename = "";
-
-  if (test_membership != "no") {
-    if (test_membership == "eps") {
-      if (!vm.count("test-parameter")) {
-        throw runtime_error("eps membership type requires a --test-parameter");
+      if (vm.count("help")) {
+        cout << desc << endl;
+        return 1;
       }
-      test_membership_eps = vm["test-parameter"].as<double>();
-    } else if (test_membership == "k") { 
-      if (!vm.count("test-parameter")) {
-        throw runtime_error("k-nearest-neighbours membership type requires a --test-parameter");
+
+      if (vm.count("no-triangle-inequality")) {
+        use_triangle_inequality = false;
       }
-      test_membership_k = (int)vm["test-parameter"].as<double>();
-    } else {
-      throw runtime_error("unsupported membership test type: " + test_membership);
+
+      if (vm.count("scale")) {
+        use_feature_scaling = true;
+      }
+
+      if (!vm.count("input-file")) {
+        cerr << "Error: input file required." << endl;
+        cout << desc << endl;
+        return 1;
+      }
+      norm = vm["norm"].as<int>();
+      if (norm != 1 && norm != 2) {
+        cerr << "Only norms 1 or 2 are supported" << endl;
+        cerr << desc << endl;
+        return 1;
+      }
+
+      const string cluster_method = vm["cluster-method"].as<string>();
+    
+      if (cluster_method == "file") {
+        if (!vm.count("labels")) {
+          cerr << "Error: --cluster-method=file requires a --labels file" << endl;
+          cerr << desc << endl;
+          return 1;
+        }
+        label_file = vm["labels"].as<string>();
+      } else if (cluster_method != "dbscan") {
+        cerr << "Error: invalid value for --cluster-method" << endl;
+        cerr << desc << endl;
+        return 1;
+      }
+
+      filetype = vm["input-type"].as<string>();
+
+      infile = vm["input-file"].as<string>();
+      eps = vm["epsilon"].as<double>();
+      minpts = vm["minpts"].as<unsigned int>();
+
+      test_membership = vm["test-membership"].as<string>();
+      test_membership_k = 0;
+      test_membership_eps = 0.0;
+      test_membership_filename = "";
+
+      if (test_membership != "no") {
+        if (test_membership == "eps") {
+          if (!vm.count("test-parameter")) {
+            throw runtime_error("eps membership type requires a --test-parameter");
+          }
+          test_membership_eps = vm["test-parameter"].as<double>();
+        } else if (test_membership == "k") { 
+          if (!vm.count("test-parameter")) {
+            throw runtime_error("k-nearest-neighbours membership type requires a --test-parameter");
+          }
+          test_membership_k = (int)vm["test-parameter"].as<double>();
+        } else {
+          throw runtime_error("unsupported membership test type: " + test_membership);
+        }
+        if (!vm.count("test-file")) {
+          throw runtime_error("membership test requires --test-file");
+        }
+        test_membership_filename = vm["test-file"].as<string>();
+      }
+      return 0;
     }
-    if (!vm.count("test-file")) {
-      throw runtime_error("membership test requires --test-file");
-    }
-    test_membership_filename = vm["test-file"].as<string>();
-  }
+};
 
-  cout << "reading from " << infile << ", eps=" << eps <<", minpts=" << minpts << ", "
-    << (use_triangle_inequality?"":"not") << " using triangle inequality, "
-    << (use_feature_scaling?"":"not") << " using feature scaling." << endl;
-
-
+template<class norm_aggregator>
+int run_clusterer(const options& o) {
   trace("load file");
   matrix_t data;
   featurescale_t featurescale;
   try {
-    if (filetype == "cluto") {
-      load_file_cluto(infile, data, featurescale);
-    } else if (filetype == "plain") {
-      load_file_plain<unsigned int>(infile, data, featurescale);
+    if (o.filetype == "cluto") {
+      load_file_cluto(o.infile, data, featurescale);
+    } else if (o.filetype == "plain") {
+      load_file_plain<unsigned int>(o.infile, data, featurescale);
     } else {
-      cerr << "Error: unknown file type " << filetype << endl;
-      cerr << desc << endl;
+      cerr << "Error: unknown file type " << o.filetype << endl;
       return 1;
     }
   } catch (const exception& c) {
@@ -761,23 +782,22 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  if (!use_feature_scaling) {
+  if (!o.use_feature_scaling) {
     featurescale.clear();
     featurescale.insert(featurescale.end(), data.size2(), 1.0);
   }
+
+  cout << "input is " << data.size1() << "x" << data.size2() << endl;
 
   // basepoints for triangle inequality
   distvector_t reference_distances;
   reference_distances.resize(data.size1());
 
-  if (use_triangle_inequality) {
+  if (o.use_triangle_inequality) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.size1(); ++i) {
-      if (norm == 1) {
-        reference_distances[i] = make_pair(distance_find<c_manhattan<int> >(data, 0, i, featurescale), i);
-      } else {
-        reference_distances[i] = make_pair(distance_find<c_euclid<int> >(data, 0, i, featurescale), i);
-      }
+      cout << i << endl;
+      reference_distances[i] = make_pair(distance_manual_cached<norm_aggregator>(data, 0, i, featurescale), i);
       DBG(cout << reference_distances[i].first << " ";)
     }
     DBG(cout << endl;)
@@ -789,46 +809,50 @@ int main(int argc, char ** argv) {
 
   trace("create distancematrix");
   distancematrix_t distancematrix(data.size1(), data.size1());
-  if (norm == 1) {
-    create_distance_matrix<distance_find<c_manhattan<int> > >(data, reference_distances, eps, featurescale, distancematrix);
-  } else {
-    create_distance_matrix<distance_find<c_euclid<int> > >(data, reference_distances, eps, featurescale, distancematrix);
-  }
+  create_distance_matrix<distance_manual_cached<norm_aggregator> >(data, reference_distances, o.eps, featurescale, distancematrix);
 
   trace("sort reference distances");
-  if (use_triangle_inequality) {
+  if (o.use_triangle_inequality) {
     sort(reference_distances.begin(), reference_distances.end());
   }
 
   std::vector<node_meta> metadata(data.size1());
-  if (cluster_method == "dbscan") {
+  if (o.cluster_method == "dbscan") {
     trace("DBSCAN");
-    dbscan(reference_distances, distancematrix, eps, minpts, metadata);
-  } else if (cluster_method == "file") {
+    dbscan(reference_distances, distancematrix, o.eps, o.minpts, metadata);
+  } else if (o.cluster_method == "file") {
     trace("label-load");
-    load_file_clusters(label_file, metadata);
+    load_file_clusters(o.label_file, metadata);
   }
 
   // Test membership if wanted
-  if (test_membership != "no") {
+  if (o.test_membership != "no") {
     matrix_t test_data;
     featurescale_t test_featurescale;
     try {
-      if (filetype == "cluto") {
-        load_file_cluto(test_membership_filename, test_data, test_featurescale);
+      if (o.filetype == "cluto") {
+        load_file_cluto(o.test_membership_filename, test_data, test_featurescale);
       } else {
-        load_file_plain<datatype>(test_membership_filename, test_data, test_featurescale);
+        load_file_plain<datatype>(o.test_membership_filename, test_data, test_featurescale);
       }
     } catch (const runtime_error& e) {
       cerr << "Error while loading test member ship data: " << e.what() << endl;
       return 1;
     }
     
-    if (test_membership == "eps") {
-      //test_epsneighbourhood(data, test_data, reference_distances, test_membership_eps); 
+    std::vector<node_meta> nodemetaout;
+    if (o.test_membership == "eps") {
+      test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata, o.test_membership_eps, nodemetaout); 
+    }
+
+    {
+      FILE *f = fopen("test.out", "w");
+      for (size_t i = 0; i < nodemetaout.size(); ++i) {
+        fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
+      }
+      fclose(f);
     }
   }
-
 
 
   trace("output");
@@ -857,6 +881,40 @@ int main(int argc, char ** argv) {
   fclose(f);
 
   dump_trace();
+
+  return 0;
 }
+
+
+int main(int argc, char ** argv) {
+  options o;
+  try {
+    int ret = o.init(argc, argv);
+    if (ret) 
+      return ret;
+  } catch (const std::runtime_error& e) {
+    cerr << e.what() << endl;
+    return 1;
+  }
+
+  cout << "reading from " << o.infile << ", eps=" << o.eps <<", minpts=" << o.minpts << ", "
+    << (o.use_triangle_inequality?"":"not") << " using triangle inequality, "
+    << (o.use_feature_scaling?"":"not") << " using feature scaling." << endl;
+
+  try {
+    int ret;
+    if (o.norm == 1) {
+      ret = run_clusterer<c_manhattan<datatype> >(o);
+    } else {
+      ret = run_clusterer<c_euclid<datatype> >(o);
+    }
+    if (ret) {
+      return 1;
+    }
+  } catch (const runtime_error& e) {
+    cerr << "Error: " << e.what() << endl;
+  }
+}
+/*}}}*/
 
 /* vim: set fdm=marker: */
