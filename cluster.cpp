@@ -462,9 +462,9 @@ void create_distance_matrix(matrix_t &data, const distvector_t &reference_distan
 
 double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
   double d = dst(a,b);
-  if (d == 0 && a != b) {
-    throw runtime_error("got 0 distance!");
-  }
+  //if (d == 0 && a != b) {
+  //  throw runtime_error("got 0 distance!");
+  //}
   return d;
 }
 /**}}}*/
@@ -714,7 +714,7 @@ class options {
         return 1;
       }
 
-      const string cluster_method = vm["cluster-method"].as<string>();
+      cluster_method = vm["cluster-method"].as<string>();
     
       if (cluster_method == "file") {
         if (!vm.count("labels")) {
@@ -823,6 +823,8 @@ int run_clusterer(const options& o) {
   } else if (o.cluster_method == "file") {
     trace("label-load");
     load_file_clusters(o.label_file, metadata);
+  } else {
+    throw runtime_error("unsupported clustering method " + o.cluster_method);
   }
 
   // Test membership if wanted
