@@ -27,10 +27,10 @@ using namespace std;
 //using namespace arma;
 
 typedef double datatype; // TODO only int supported for now (atoi function calls)
-typedef arma::SpMat<datatype> matrix_t;
 typedef arma::Mat<double> distancematrix_t;
 typedef std::vector<pair<double, unsigned int> > distvector_t;
 typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
+
 
 struct node_meta {
   node_meta() : cluster(""), visited(false), noise(false) { }
@@ -41,7 +41,6 @@ struct node_meta {
 };
 
 /* }}} */
-
 /* file import {{{ */
 
 #ifdef _WIN32
@@ -98,110 +97,6 @@ size_t getline(char **lineptr, size_t *n, FILE *stream) {
     return p - bufptr - 1;
 }
 #endif
-
-void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
-  FILE *fp;
-  char * line = NULL;
-  size_t len = 0;
-  ssize_t read;
-
-  fp = fopen(infilename.c_str(), "r");
-  if (fp == NULL) {
-    throw runtime_error("Could not open file " + infilename);
-  }
-
-  read = getline(&line, &len, fp);
-
-  if (read == -1) {
-    throw runtime_error("Could not read file (empty?)");
-  }
-
-  int nrows, ncols, nnzelem;
-  char * tk = strtok(line, " ");
-  nrows = atoi(tk);
-  tk = strtok(NULL, " ");
-  ncols = atoi(tk);
-  tk = strtok(NULL, " ");
-  if (tk == NULL || strlen(tk) <= 1) {
-    throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
-  }
-
-  nnzelem = atoi(tk);
-
-  out = matrix_t(nrows, ncols);
-  featurescale.resize(ncols, 1.0);
-  // TODO use batch insert format
-  int row = 0;
-  while ((read = getline(&line, &len, fp)) != -1)  {
-    char* next_tk = strtok(line, " ");
-
-    while (next_tk) {
-      int idx = atoi(next_tk);
-      next_tk = strtok(NULL, " ");
-      int val = atoi(next_tk);
-      out(row, idx-1) = val;
-      featurescale[idx-1] = max((double)featurescale[idx-1], (double)val);
-      next_tk = strtok(NULL, " ");
-    }
-    ++row;
-  }
-}
-
-
-template<typename dtype>
-void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
-  // this function reads a dense matrix into a sparse filetype, until i can figure out if there
-  // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
-  // both using the sparse datatype and the actual "read" implementation used here.
-  FILE *fp;
-  char * line = NULL;
-  size_t len = 0;
-  ssize_t read;
-
-  fp = fopen(infilename.c_str(), "r");
-  if (fp == NULL) {
-    throw runtime_error("Could not open file " + infilename);
-  }
-
-  unsigned int row = 0;
-  std::vector<std::vector<dtype> > data;
-
-  while ((read = getline(&line, &len, fp)) != -1)  {
-    char* next_tk = strtok(line, " ");
-    unsigned int idx = 0;
-    std::vector<dtype> inner;
-    while (next_tk) {
-      dtype val = atoi(next_tk);
-      inner.push_back(val);
-
-      if (featurescale.size() <= idx) {
-        featurescale.push_back(val);
-      } else {
-        featurescale[idx] = max((double)featurescale[idx], (double)val);
-      }
-      idx++;
-      next_tk = strtok(NULL, " ");
-    }
-
-    if (data.size() && inner.size() != data[0].size()) {
-      throw runtime_error("matrix dimension mismatch on row " + boost::lexical_cast<string>(row+1));
-    }
-    ++row;
-    data.push_back(inner);
-  }
-
-  if (!data.size()) {
-    throw runtime_error("Input file didn't contain anything apparently");
-  }
-  out = matrix_t(row, data[0].size());
-
-  for (unsigned int i = 0; i < data.size(); ++i) {
-    for (unsigned int j = 0; j < data[i].size(); ++j) {
-      out(i,j) = data[i][j]; // how very efficient! :/
-    }
-  }
-}
-
 void load_file_clusters(const std::string filename, std::vector<node_meta>& nodeinfo) {
   FILE *fp;
   char * line = NULL;
@@ -238,9 +133,163 @@ void load_file_clusters(const std::string filename, std::vector<node_meta>& node
 }
 
 /* }}} */
+/* mt_sparse {{{*/
+template <int norm>
+struct mt_sparse {
+  typedef typename arma::SpMat<double> type;
+
+  static void load_file(const string& infilename, type& out, featurescale_t &featurescale) {
+    FILE *fp;
+    char * line = NULL;
+    size_t len = 0;
+    ssize_t read;
+
+    fp = fopen(infilename.c_str(), "r");
+    if (fp == NULL) {
+      throw runtime_error("Could not open file " + infilename);
+    }
+
+    read = getline(&line, &len, fp);
+
+    if (read == -1) {
+      throw std::runtime_error("Could not read file (empty?)");
+    }
+
+    int nrows, ncols, nnzelem;
+    char * tk = strtok(line, " ");
+    nrows = atoi(tk);
+    tk = strtok(NULL, " ");
+    ncols = atoi(tk);
+    tk = strtok(NULL, " ");
+    if (tk == NULL || strlen(tk) <= 1) {
+      throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
+    }
+
+    nnzelem = atoi(tk);
+
+    arma::umat locations(nnzelem, 2);
+    arma::vec values(nnzelem);
+    
+    featurescale.resize(ncols, 1.0);
+    // TODO use batch insert format
+    int row = 0;
+    while ((read = getline(&line, &len, fp)) != -1)  {
+      char* next_tk = strtok(line, " ");
+
+      while (next_tk) {
+        int idx = atoi(next_tk);
+        next_tk = strtok(NULL, " ");
+        int val = atoi(next_tk);
+        //out(row, idx-1) = val;
+        locations << row << idx-1 << arma::endr;
+        values << (double)val;
+        featurescale[idx-1] = max((double)featurescale[idx-1], (double)val);
+        next_tk = strtok(NULL, " ");
+      }
+      ++row;
+    }
+    out = type(locations.t(), values);
+  }
+
+  static double calculate_distance(const type &m, size_t row1, const type &m2, size_t row2, const featurescale_t& /*featurescale*/) {
+    //arma::SpMat<datatype> z = m.row(row1);
+    //z -= m2.row(row2);
+    //return arma::norm(z, 1);
+    typename type::const_row_iterator r1 = m.begin_row(row1);
+    typename type::const_row_iterator r2 = m2.begin_row(row2);
+
+    double sum = 0;
+    while (r1 != m.end_row(row1) && r2 != m2.end_row(row2)) {
+      if (r1.col() < r2.col()) {
+        r1++;
+        continue;
+      }
+      if (r2.col() < r1.col()) {
+        r2++;
+      }
+      if (norm == 1) {
+        sum += fabs(*r1 - *r2);
+      } else { 
+        double tmp = *r1 - *r2;
+        sum += (tmp*tmp);
+      }
+    }
+
+    if (norm == 1) {
+      return sum;
+    } else {
+      return sqrt(sum);
+    }
+  }
+};
+/**}}}*/
+/* mt_dense {{{*/
+template <int norm>
+struct mt_dense {
+  typedef typename arma::Mat<double> type;
+
+  static double calculate_distance(const type &m, size_t row1, const type &m2, size_t row2, const featurescale_t& /*featurescale*/) {
+    return arma::norm(m.row(row1) - m2.row(row2), norm);
+  }
+
+  static void load_file(const string& infilename, type& out, featurescale_t &featurescale) {
+    // this function reads a dense matrix into a sparse filetype, until i can figure out if there
+    // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
+    // both using the sparse datatype and the actual "read" implementation used here.
+    FILE *fp;
+    char * line = NULL;
+    size_t len = 0;
+    ssize_t read;
+
+    fp = fopen(infilename.c_str(), "r");
+    if (fp == NULL) {
+      throw runtime_error("Could not open file " + infilename);
+    }
+
+    unsigned int row = 0;
+    std::vector<std::vector<datatype> > data;
+
+    while ((read = getline(&line, &len, fp)) != -1)  {
+      char* next_tk = strtok(line, " ");
+      unsigned int idx = 0;
+      std::vector<datatype> inner;
+      while (next_tk) {
+        datatype val = atoi(next_tk);
+        inner.push_back(val);
+
+        if (featurescale.size() <= idx) {
+          featurescale.push_back(val);
+        } else {
+          featurescale[idx] = max((double)featurescale[idx], (double)val);
+        }
+        idx++;
+        next_tk = strtok(NULL, " ");
+      }
+
+      if (data.size() && inner.size() != data[0].size()) {
+        throw runtime_error("matrix dimension mismatch on row " + boost::lexical_cast<string>(row+1));
+      }
+      ++row;
+      data.push_back(inner);
+    }
+
+    if (!data.size()) {
+      throw runtime_error("Input file didn't contain anything apparently");
+    }
+    out = type(row, data[0].size());
+
+    for (unsigned int i = 0; i < data.size(); ++i) {
+      for (unsigned int j = 0; j < data[i].size(); ++j) {
+        out(i,j) = data[i][j]; // how very efficient! :/
+      }
+    }
+  }
+};
+
+/**}}}*/
 /* distance implementations {{{ */
 
-typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
+//typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
 /*
 double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
     // 45 seconds for n rows
@@ -442,25 +491,17 @@ out:
 }
 */
 
-template<int norm>
-double calculate_distance(const matrix_t &m, size_t row1, const matrix_t &m2, size_t row2, const featurescale_t& /*featurescale*/) {
-  //arma::SpMat<datatype> z = m.row(row1);
-  //z -= m2.row(row2);
-  //return arma::norm(z, 1);
-  return arma::norm(m.row(row1) - m2.row(row2), norm);
-   //  - m2.row(row2), 1); 
-}
 
 /*}}}*/
-/** distance matrix {{{ */
-template<int norm>
-void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
+/* distance matrix {{{ */
+template<class mt>
+void create_distance_matrix(typename mt::type &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
   size_t ds1 = data.n_rows;
   for (size_t i = 0; i < ds1; ++i) {
     cout << "processing line #" << i << endl;
     for (size_t j = 0; j < i; ++j) {
       if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
-        dst(i,j) = calculate_distance<norm>(data, i, data, j, featurescale);
+        dst(i,j) = mt::calculate_distance(data, i, data, j, featurescale);
       }
     }
     dst(i,i) = 0;
@@ -475,7 +516,8 @@ double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
   return d;
 }
 /**}}}*/
-/** get_next {{{*/
+
+/* get_next {{{*/
 /**
  * Helper function to walk left/right in a distance array, gradually returning values that are farther away.
  * Initialize this function by setting lbound and rbound to the offset in the vector where the value mid_value
@@ -514,7 +556,6 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const double mi
   throw runtime_error("obligatory 'this should never happen'");
 }
 /**}}}*/
-
 /* DBSCAN {{{ */
 /**
  * get the neighbours for a given distvector index within range eps, excluding the point itself.
@@ -591,13 +632,15 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 
 /*}}}*/
 /* membership tests {{{*/
-template<int norm>
-void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
+template<class mt>
+void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data, distvector_t& /*reference_distances*/, featurescale_t &featurescale,
+    const std::vector<node_meta> &nodemeta, double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   std::vector<size_t> result_indizes;
   nodemetaout.resize(test_data.n_rows);
   for (size_t i = 0; i < test_data.n_rows; ++i) {
+    result_indizes.clear();
     for (size_t j = 0; j < data.n_rows; ++j) {
-      double dist = calculate_distance<norm>(test_data, i, data, j, featurescale);
+      double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
       if (dist <= eps) {
         result_indizes.push_back(j);
       }
@@ -626,8 +669,9 @@ void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& re
   }
 } 
 
-template<int norm>
-void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
+template<class mt>
+void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data, distvector_t& /*reference_distances*/, featurescale_t &featurescale,
+    const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   /* TODO triangle inequality:
    * for (t test_data) {
    *   this_ref_distance = distance(reference_point, t);
@@ -648,7 +692,7 @@ void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& ref
   for (size_t i = 0; i < test_data.n_rows; ++i) {
     result_indizes.clear();
     for (size_t j = 0; j < data.n_rows; ++j) {
-      double dist = calculate_distance<norm>(test_data, i, data, j, featurescale);
+      double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
       result_indizes.push_back(make_pair(dist, j));
     }
 
@@ -716,7 +760,7 @@ void dump_trace() {
 }
 
 /* }}} */
-/* init code {{{ */
+/* cluster options & command line parsing {{{ */
 namespace po = boost::program_options;
 
 class options {
@@ -856,21 +900,16 @@ class options {
       return 0;
     }
 };
+/*}}}*/
+/* main {{{*/
 
-template<int norm>
+template<class mt>
 int run_clusterer(const options& o) {
   trace("load file");
-  matrix_t data;
+  typename mt::type data;
   featurescale_t featurescale;
   try {
-    if (o.filetype == "cluto") {
-      load_file_cluto(o.infile, data, featurescale);
-    } else if (o.filetype == "plain") {
-      load_file_plain<unsigned int>(o.infile, data, featurescale);
-    } else {
-      cerr << "Error: unknown file type " << o.filetype << endl;
-      return 1;
-    }
+    mt::load_file(o.infile, data, featurescale);
   } catch (const exception& c) {
     cout << "Error: " << c.what() << endl;
     return 1;
@@ -881,7 +920,7 @@ int run_clusterer(const options& o) {
     featurescale.insert(featurescale.end(), data.n_cols, 1.0);
   }
 
-  cout << "input is " << data.n_cols << "x" << data.n_cols << endl;
+  cout << "input is " << data.n_rows << "x" << data.n_cols << endl;
 
   // basepoints for triangle inequality
   distvector_t reference_distances;
@@ -890,8 +929,7 @@ int run_clusterer(const options& o) {
   if (o.use_triangle_inequality) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.n_rows; ++i) {
-      cout << i << endl;
-      reference_distances[i] = make_pair(calculate_distance<norm>(data, 0, data, i, featurescale), i);
+      reference_distances[i] = make_pair(mt::calculate_distance(data, 0, data, i, featurescale), i);
       DBG(cout << reference_distances[i].first << " ";)
     }
     DBG(cout << endl;)
@@ -901,20 +939,49 @@ int run_clusterer(const options& o) {
     }
   }
 
-  trace("create distancematrix");
-  distancematrix_t distancematrix(data.n_rows, data.n_rows);
-  create_distance_matrix<norm>(data, reference_distances, o.eps, featurescale, distancematrix);
-  distancematrix = symmatu(distancematrix);
-
-  trace("sort reference distances");
-  if (o.use_triangle_inequality) {
-    sort(reference_distances.begin(), reference_distances.end());
-  }
 
   std::vector<node_meta> metadata(data.n_rows);
   if (o.cluster_method == "dbscan") {
+    trace("create distancematrix");
+    distancematrix_t distancematrix(data.n_rows, data.n_rows);
+    create_distance_matrix<mt>(data, reference_distances, o.eps, featurescale, distancematrix);
+    distancematrix = symmatu(distancematrix);
+    
+    trace("sort reference distances");
+    distvector_t reference_distances_sorted = reference_distances;
+    if (o.use_triangle_inequality) {
+      sort(reference_distances.begin(), reference_distances.end());
+    }
+
     trace("DBSCAN");
     dbscan(reference_distances, distancematrix, o.eps, o.minpts, metadata);
+    if (o.dump_distancematrix) {
+      trace("dumping distance matrix");
+      FILE *f = fopen("distmatrix.out", "w");
+      bool first;
+      for (size_t i = 0; i < distancematrix.n_rows; ++i) {
+        first = true;
+        for (size_t j = 0; j < distancematrix.n_cols; ++j) {
+          if (first) {
+            fprintf(f, "%f", distancematrix(i,j));
+            first = false;
+          } else {
+            fprintf(f, " %f", distancematrix(i,j));
+          }
+        }
+        fputs("\n", f);
+      }
+      fclose(f);
+    }
+
+    trace("DBSCAN output");
+    {
+      FILE *f = fopen("cluster.out", "w");
+      for (size_t i = 0; i < metadata.size(); ++i) {
+        fprintf(f, "%s%s\n", metadata[i].cluster.c_str(), metadata[i].noise?" (noise)":"");
+      }
+      fclose(f);
+    }
   } else if (o.cluster_method == "file") {
     trace("label-load");
     load_file_clusters(o.label_file, metadata);
@@ -925,13 +992,13 @@ int run_clusterer(const options& o) {
   // Test membership if wanted
   if (o.test_membership != "no") {
     trace("loading test file");
-    matrix_t test_data;
+    typename mt::type test_data;
     featurescale_t test_featurescale;
     try {
       if (o.filetype == "cluto") {
-        load_file_cluto(o.test_membership_filename, test_data, test_featurescale);
+        mt::load_file(o.test_membership_filename, test_data, test_featurescale);
       } else {
-        load_file_plain<datatype>(o.test_membership_filename, test_data, test_featurescale);
+        mt::load_file(o.test_membership_filename, test_data, test_featurescale);
       }
     } catch (const runtime_error& e) {
       cerr << "Error while loading test member ship data: " << e.what() << endl;
@@ -939,20 +1006,21 @@ int run_clusterer(const options& o) {
     }
     
     if (o.test_membership == "eps" || o.test_membership == "k") {
-      trace("testing membership");
+      trace("neighbourhood test");
       bool write_neighbours = false;
       if (o.test_write_neighbours_file.size()) {
         write_neighbours = true;
       }
       std::vector<node_meta> nodemetaout;
       if (o.test_membership == "eps") {
-        test_epsneighbourhood<norm>(data, test_data, reference_distances, featurescale, metadata,
+        test_epsneighbourhood<mt>(data, test_data, reference_distances, featurescale, metadata,
               o.test_membership_eps, write_neighbours, nodemetaout); 
       } else {
-        test_knneighbourhood<norm>(data, test_data, reference_distances, featurescale, metadata,
+        test_knneighbourhood<mt>(data, test_data, reference_distances, featurescale, metadata,
             o.test_membership_k, write_neighbours, nodemetaout); 
       }
 
+      trace("writing membership.out");
       {
         FILE *f = fopen("membership.out", "w");
         for (size_t i = 0; i < nodemetaout.size(); ++i) {
@@ -962,6 +1030,7 @@ int run_clusterer(const options& o) {
       }
 
       if (write_neighbours) {
+        trace("writing neighbour information");
         FILE *f = fopen(o.test_write_neighbours_file.c_str(), "w");
         for (size_t i = 0; i < nodemetaout.size(); ++i) {
           bool first = true;
@@ -980,32 +1049,6 @@ int run_clusterer(const options& o) {
       }
     }
   }
-
-
-  trace("output");
-  {
-  FILE *f = fopen("cluster.out", "w");
-  for (size_t i = 0; i < metadata.size(); ++i) {
-    fprintf(f, "%s%s\n", metadata[i].cluster.c_str(), metadata[i].noise?" (noise)":"");
-  }
-  fclose(f);
-  }
-
-  FILE *f = fopen("distmatrix.out", "w");
-  bool first;
-  for (size_t i = 0; i < distancematrix.n_rows; ++i) {
-    first = true;
-    for (size_t j = 0; j < distancematrix.n_cols; ++j) {
-      if (first) {
-        fprintf(f, "%f", distancematrix(i,j));
-        first = false;
-      } else {
-        fprintf(f, " %f", distancematrix(i,j));
-      }
-    }
-    fputs("\n", f);
-  }
-  fclose(f);
 
   dump_trace();
 
@@ -1030,10 +1073,18 @@ int main(int argc, char ** argv) {
 
   try {
     int ret;
-    if (o.norm == 1) {
-      ret = run_clusterer<1>(o);
+    if (o.filetype == "cluto") {
+      if (o.norm == 1) {
+        ret = run_clusterer<mt_sparse<1> >(o);
+      } else {
+        ret = run_clusterer<mt_sparse<2> >(o);
+      }
     } else {
-      ret = run_clusterer<2>(o);
+      if (o.norm == 1) {
+        ret = run_clusterer<mt_dense<1> >(o);
+      } else {
+        ret = run_clusterer<mt_dense<2> >(o);
+      }
     }
     if (ret) {
       return 1;
@@ -1043,5 +1094,4 @@ int main(int argc, char ** argv) {
   }
 }
 /*}}}*/
-
 /* vim: set fdm=marker: */
