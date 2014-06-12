@@ -41,6 +41,7 @@ struct node_meta {
   string cluster;
   bool visited;
   bool noise;
+  std::vector<size_t> neighbour_ids;
 };
 
 /* }}} */
@@ -585,7 +586,7 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 /*}}}*/
 /* membership tests {{{*/
 template<class aggr>
-void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, std::vector<node_meta> &nodemetaout) {
+void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   std::vector<size_t> result_indizes;
   nodemetaout.resize(test_data.size1());
   for (size_t i = 0; i < test_data.size1(); ++i) {
@@ -612,12 +613,15 @@ void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& re
         cur_max = it->second;
       }
     }
+    if (collect_neighbours) {
+      nodemetaout[i].neighbour_ids = result_indizes;
+    }
     nodemetaout[i].cluster = cur_max_lbl;
   }
 } 
 
 template<class aggr>
-void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, size_t k, std::vector<node_meta> &nodemetaout) {
+void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   /* TODO triangle inequality:
    * for (t test_data) {
    *   this_ref_distance = distance(reference_point, t);
@@ -643,6 +647,9 @@ void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& ref
     }
 
     sort(result_indizes.begin(), result_indizes.end());
+    if (collect_neighbours) {
+      nodemetaout[i].neighbour_ids.reserve(result_indizes.size());
+    }
     size_t cur_max = 0;
     string cur_max_lbl;
 
@@ -650,6 +657,11 @@ void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& ref
     for (size_t j = 0; j < result_indizes.size() && j < k; ++j) {
       string cl = nodemeta[result_indizes[j].second].cluster;
       occurences[cl]++;
+      if (collect_neighbours) {
+        nodemetaout[i].neighbour_ids.push_back(result_indizes[j].second);
+      }
+      // k+1: if the cluster is ambiguous, collect more neighbours.
+      // Check if we have reached k (assuming that we have more than k neighbours)
       if (j < k && j+1 < result_indizes.size()) {
         continue;
       }
@@ -657,8 +669,9 @@ void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& ref
       for (std::map<string, size_t>::iterator it = occurences.begin(); it != occurences.end(); ++it) {
         hist.push_back(it->second);
       }
-      if (hist.size() < 2)
+      if (hist.size() < 2) {
         break;
+      }
       sort(hist.begin(), hist.end());
       if (hist[hist.size()-2] != hist[hist.size()-1]) {
         break;
@@ -671,6 +684,7 @@ void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& ref
         cur_max = it->second;
       }
     }
+
     if (!occurences.size()) {
       nodemetaout[i].noise = true;
     }
@@ -714,6 +728,7 @@ class options {
     double test_membership_eps;
     string test_membership_filename;
     string label_file;
+    string test_write_neighbours_file;
 
     options() {
       use_triangle_inequality = true;
@@ -732,16 +747,18 @@ class options {
                                                                       "  cluto - CLUTO file format (sparse)\n"
                                                                       "  plain - space seperated features, each in a new line.")
         ("norm,n", po::value<int>()->default_value(1), "norm to use (1 or 2)")
-        ("cluster-method,c", po::value<string>()->default_value("dbscan"), "Cluster method. Possible values are\n"
+        ("cluster-method,c", po::value<string>()->default_value("none"), "Cluster method. Possible values are\n"
                                                                           "  dbscan - cluster using dbscan\n"
-                                                                          "  file   - read labels from file\n")
+                                                                          "  file   - read labels from file\n"
+                                                                          "  none   - don't perform clustering\n")
         ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
-        ("test-membership", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
+        ("test", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
                                                 "  no  - don't test membership\n"
                                                 "  eps - use eps neighbourhood\n"
                                                 "  k   - use k-nearest-neighbours")
-        ("test-file", po::value<string>(), "file to read membership test values from")
+        ("test-file", po::value<string>(), "file to read membership test values from. If not set, the main input file will be used.")
         ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
+        ("test-neighbours-out", po::value<string>()->default_value(""), "write neighbours to <file>")
       ;
 
       po::positional_options_description p;
@@ -785,7 +802,7 @@ class options {
           return 1;
         }
         label_file = vm["labels"].as<string>();
-      } else if (cluster_method != "dbscan") {
+      } else if (cluster_method != "dbscan" && cluster_method != "none") {
         cerr << "Error: invalid value for --cluster-method" << endl;
         cerr << desc << endl;
         return 1;
@@ -797,10 +814,11 @@ class options {
       eps = vm["epsilon"].as<double>();
       minpts = vm["minpts"].as<unsigned int>();
 
-      test_membership = vm["test-membership"].as<string>();
+      test_membership = vm["test"].as<string>();
       test_membership_k = 0;
       test_membership_eps = 0.0;
       test_membership_filename = "";
+      test_write_neighbours_file = vm["test-neighbours-out"].as<string>();
 
       if (test_membership != "no") {
         if (test_membership == "eps") {
@@ -817,9 +835,10 @@ class options {
           throw runtime_error("unsupported membership test type: " + test_membership);
         }
         if (!vm.count("test-file")) {
-          throw runtime_error("membership test requires --test-file");
+          test_membership_filename = infile; 
+        } else {
+          test_membership_filename = vm["test-file"].as<string>();
         }
-        test_membership_filename = vm["test-file"].as<string>();
       }
       return 0;
     }
@@ -885,7 +904,7 @@ int run_clusterer(const options& o) {
   } else if (o.cluster_method == "file") {
     trace("label-load");
     load_file_clusters(o.label_file, metadata);
-  } else {
+  } else if (o.cluster_method != "none"){
     throw runtime_error("unsupported clustering method " + o.cluster_method);
   }
 
@@ -905,20 +924,46 @@ int run_clusterer(const options& o) {
       return 1;
     }
     
-    trace("testing membership");
-    std::vector<node_meta> nodemetaout;
-    if (o.test_membership == "eps") {
-      test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata, o.test_membership_eps, nodemetaout); 
-    } else {
-      test_knneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata, o.test_membership_k, nodemetaout); 
-    }
-
-    {
-      FILE *f = fopen("membership.out", "w");
-      for (size_t i = 0; i < nodemetaout.size(); ++i) {
-        fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
+    if (o.test_membership == "eps" || o.test_membership == "k") {
+      trace("testing membership");
+      bool write_neighbours = false;
+      if (o.test_write_neighbours_file.size()) {
+        write_neighbours = true;
       }
-      fclose(f);
+      std::vector<node_meta> nodemetaout;
+      if (o.test_membership == "eps") {
+        test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata,
+              o.test_membership_eps, write_neighbours, nodemetaout); 
+      } else {
+        test_knneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata,
+            o.test_membership_k, write_neighbours, nodemetaout); 
+      }
+
+      {
+        FILE *f = fopen("membership.out", "w");
+        for (size_t i = 0; i < nodemetaout.size(); ++i) {
+          fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
+        }
+        fclose(f);
+      }
+
+      if (write_neighbours) {
+        FILE *f = fopen(o.test_write_neighbours_file.c_str(), "w");
+        for (size_t i = 0; i < nodemetaout.size(); ++i) {
+          bool first = true;
+          for (std::vector<size_t>::iterator it = nodemetaout[i].neighbour_ids.begin();
+                it != nodemetaout[i].neighbour_ids.end(); ++it)  { 
+            if (first) {
+              first = false;
+              fprintf(f, "%lu", *it);
+            } else {
+              fprintf(f, " %lu", *it);
+            }
+          }
+          fprintf(f, "\n");
+        }
+        fclose(f);
+      }
     }
   }
 
