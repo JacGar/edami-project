@@ -3,12 +3,8 @@
 #define _GNU_SOURCE
 #endif
 #include <boost/program_options.hpp>
-#include <boost/numeric/ublas/matrix_sparse.hpp>
-#include <boost/numeric/ublas/io.hpp>
-#include <boost/numeric/ublas/matrix_proxy.hpp>
-#include <boost/numeric/ublas/symmetric.hpp>
-#include <boost/numeric/ublas/vector.hpp>
 #include <boost/lexical_cast.hpp>
+#include <armadillo>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -28,11 +24,11 @@
 #endif
 
 using namespace std;
-using namespace boost::numeric::ublas;
+//using namespace arma;
 
-typedef int datatype; // TODO only int supported for now (atoi function calls)
-typedef compressed_matrix<datatype> matrix_t;
-typedef symmetric_matrix<double> distancematrix_t;
+typedef double datatype; // TODO only int supported for now (atoi function calls)
+typedef arma::SpMat<datatype> matrix_t;
+typedef arma::Mat<double> distancematrix_t;
 typedef std::vector<pair<double, unsigned int> > distvector_t;
 typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
 
@@ -132,9 +128,9 @@ void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &fe
 
   nnzelem = atoi(tk);
 
-  out = matrix_t(nrows, ncols, nnzelem);
+  out = matrix_t(nrows, ncols);
   featurescale.resize(ncols, 1.0);
-
+  // TODO use batch insert format
   int row = 0;
   while ((read = getline(&line, &len, fp)) != -1)  {
     char* next_tk = strtok(line, " ");
@@ -197,7 +193,7 @@ void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &fe
   if (!data.size()) {
     throw runtime_error("Input file didn't contain anything apparently");
   }
-  out = matrix_t(row, data[0].size(), row*data[0].size());
+  out = matrix_t(row, data[0].size());
 
   for (unsigned int i = 0; i < data.size(); ++i) {
     for (unsigned int j = 0; j < data[i].size(); ++j) {
@@ -245,7 +241,7 @@ void load_file_clusters(const std::string filename, std::vector<node_meta>& node
 /* distance implementations {{{ */
 
 typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
-
+/*
 double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
     // 45 seconds for n rows
     boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
@@ -444,17 +440,27 @@ out:
   DBG(cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;)
   return aggr::finalize(dist);
 }
+*/
+
+template<int norm>
+double calculate_distance(const matrix_t &m, size_t row1, const matrix_t &m2, size_t row2, const featurescale_t& /*featurescale*/) {
+  //arma::SpMat<datatype> z = m.row(row1);
+  //z -= m2.row(row2);
+  //return arma::norm(z, 1);
+  return arma::norm(m.row(row1) - m2.row(row2), norm);
+   //  - m2.row(row2), 1); 
+}
 
 /*}}}*/
 /** distance matrix {{{ */
-template<distance_fun distFun>
+template<int norm>
 void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
-  size_t ds1 = data.size1();
+  size_t ds1 = data.n_rows;
   for (size_t i = 0; i < ds1; ++i) {
     cout << "processing line #" << i << endl;
     for (size_t j = 0; j < i; ++j) {
       if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
-        dst(i,j) = distFun(data, i, j, featurescale);
+        dst(i,j) = calculate_distance<norm>(data, i, data, j, featurescale);
       }
     }
     dst(i,i) = 0;
@@ -585,13 +591,13 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 
 /*}}}*/
 /* membership tests {{{*/
-template<class aggr>
+template<int norm>
 void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   std::vector<size_t> result_indizes;
-  nodemetaout.resize(test_data.size1());
-  for (size_t i = 0; i < test_data.size1(); ++i) {
-    for (size_t j = 0; j < data.size1(); ++j) {
-      double dist = eucledian_distance_builtin_2(test_data, i, data, j, featurescale);
+  nodemetaout.resize(test_data.n_rows);
+  for (size_t i = 0; i < test_data.n_rows; ++i) {
+    for (size_t j = 0; j < data.n_rows; ++j) {
+      double dist = calculate_distance<norm>(test_data, i, data, j, featurescale);
       if (dist <= eps) {
         result_indizes.push_back(j);
       }
@@ -620,7 +626,7 @@ void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& re
   }
 } 
 
-template<class aggr>
+template<int norm>
 void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   /* TODO triangle inequality:
    * for (t test_data) {
@@ -638,11 +644,11 @@ void test_knneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& ref
    * }
    */
   distvector_t result_indizes;
-  nodemetaout.resize(test_data.size1());
-  for (size_t i = 0; i < test_data.size1(); ++i) {
+  nodemetaout.resize(test_data.n_rows);
+  for (size_t i = 0; i < test_data.n_rows; ++i) {
     result_indizes.clear();
-    for (size_t j = 0; j < data.size1(); ++j) {
-      double dist = eucledian_distance_builtin_2(test_data, i, data, j, featurescale);
+    for (size_t j = 0; j < data.n_rows; ++j) {
+      double dist = calculate_distance<norm>(test_data, i, data, j, featurescale);
       result_indizes.push_back(make_pair(dist, j));
     }
 
@@ -844,7 +850,7 @@ class options {
     }
 };
 
-template<class norm_aggregator>
+template<int norm>
 int run_clusterer(const options& o) {
   trace("load file");
   matrix_t data;
@@ -865,20 +871,20 @@ int run_clusterer(const options& o) {
 
   if (!o.use_feature_scaling) {
     featurescale.clear();
-    featurescale.insert(featurescale.end(), data.size2(), 1.0);
+    featurescale.insert(featurescale.end(), data.n_cols, 1.0);
   }
 
-  cout << "input is " << data.size1() << "x" << data.size2() << endl;
+  cout << "input is " << data.n_cols << "x" << data.n_cols << endl;
 
   // basepoints for triangle inequality
   distvector_t reference_distances;
-  reference_distances.resize(data.size1());
+  reference_distances.resize(data.n_rows);
 
   if (o.use_triangle_inequality) {
     trace("create reference distances");
-    for (unsigned int i = 0; i < data.size1(); ++i) {
+    for (unsigned int i = 0; i < data.n_rows; ++i) {
       cout << i << endl;
-      reference_distances[i] = make_pair(distance_manual_cached<norm_aggregator>(data, 0, i, featurescale), i);
+      reference_distances[i] = make_pair(calculate_distance<norm>(data, 0, data, i, featurescale), i);
       DBG(cout << reference_distances[i].first << " ";)
     }
     DBG(cout << endl;)
@@ -889,15 +895,16 @@ int run_clusterer(const options& o) {
   }
 
   trace("create distancematrix");
-  distancematrix_t distancematrix(data.size1(), data.size1());
-  create_distance_matrix<distance_manual_cached<norm_aggregator> >(data, reference_distances, o.eps, featurescale, distancematrix);
+  distancematrix_t distancematrix(data.n_rows, data.n_rows);
+  create_distance_matrix<norm>(data, reference_distances, o.eps, featurescale, distancematrix);
+  distancematrix = symmatu(distancematrix);
 
   trace("sort reference distances");
   if (o.use_triangle_inequality) {
     sort(reference_distances.begin(), reference_distances.end());
   }
 
-  std::vector<node_meta> metadata(data.size1());
+  std::vector<node_meta> metadata(data.n_rows);
   if (o.cluster_method == "dbscan") {
     trace("DBSCAN");
     dbscan(reference_distances, distancematrix, o.eps, o.minpts, metadata);
@@ -932,10 +939,10 @@ int run_clusterer(const options& o) {
       }
       std::vector<node_meta> nodemetaout;
       if (o.test_membership == "eps") {
-        test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata,
+        test_epsneighbourhood<norm>(data, test_data, reference_distances, featurescale, metadata,
               o.test_membership_eps, write_neighbours, nodemetaout); 
       } else {
-        test_knneighbourhood<norm_aggregator>(data, test_data, reference_distances, featurescale, metadata,
+        test_knneighbourhood<norm>(data, test_data, reference_distances, featurescale, metadata,
             o.test_membership_k, write_neighbours, nodemetaout); 
       }
 
@@ -979,9 +986,9 @@ int run_clusterer(const options& o) {
 
   FILE *f = fopen("distmatrix.out", "w");
   bool first;
-  for (size_t i = 0; i < distancematrix.size1(); ++i) {
+  for (size_t i = 0; i < distancematrix.n_rows; ++i) {
     first = true;
-    for (size_t j = 0; j < distancematrix.size2(); ++j) {
+    for (size_t j = 0; j < distancematrix.n_cols; ++j) {
       if (first) {
         fprintf(f, "%f", distancematrix(i,j));
         first = false;
@@ -1017,9 +1024,9 @@ int main(int argc, char ** argv) {
   try {
     int ret;
     if (o.norm == 1) {
-      ret = run_clusterer<c_manhattan<datatype> >(o);
+      ret = run_clusterer<1>(o);
     } else {
-      ret = run_clusterer<c_euclid<datatype> >(o);
+      ret = run_clusterer<2>(o);
     }
     if (ret) {
       return 1;
