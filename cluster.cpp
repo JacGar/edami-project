@@ -729,10 +729,12 @@ class options {
     string test_membership_filename;
     string label_file;
     string test_write_neighbours_file;
+    bool dump_distancematrix;
 
     options() {
       use_triangle_inequality = true;
       use_feature_scaling = false;
+      dump_distancematrix = false;
     }
     int init(int argc, char ** argv) { 
       po::options_description desc("program options");
@@ -759,6 +761,7 @@ class options {
         ("test-file", po::value<string>(), "file to read membership test values from. If not set, the main input file will be used.")
         ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
         ("test-neighbours-out", po::value<string>()->default_value(""), "write neighbours to <file>")
+        ("dump-distancematrix", "dump distancematrix to distancematrix.out")
       ;
 
       po::positional_options_description p;
@@ -839,6 +842,10 @@ class options {
         } else {
           test_membership_filename = vm["test-file"].as<string>();
         }
+      }
+
+      if (vm.count("dump-distancematrix")) {
+        dump_distancematrix = true;
       }
       return 0;
     }
