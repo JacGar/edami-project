@@ -27,9 +27,11 @@ fnames = []
 for i in range(3, len(sys.argv)):
     idx = int(sys.argv[i])
     fields = neighbours[idx].split()
+    # remove distances
+    fields = [int(f.split("[")[0]) for f in fields]
     fname = sys.argv[2] + "." + str(idx)
     outf = open(fname, "w")
-    outf.write("\n".join([inputdata[int(f)].strip() for f in fields]))
+    outf.write("\n".join([inputdata[f].strip() for f in fields]))
     outf.close()
     fnames.append((idx, fname))
 

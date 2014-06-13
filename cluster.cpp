@@ -31,7 +31,7 @@ using namespace std;
 
 typedef double datatype; // TODO only int supported for now (atoi function calls)
 typedef arma::Mat<double> distancematrix_t;
-typedef std::vector<pair<double, unsigned int> > distvector_t;
+typedef std::vector<pair<double, size_t> > distvector_t;
 typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
 
 
@@ -40,7 +40,7 @@ struct node_meta {
   string cluster;
   bool visited;
   bool noise;
-  std::vector<size_t> neighbour_ids;
+  distvector_t neighbours;
 };
 
 /* }}} */
@@ -266,7 +266,7 @@ void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data
     bool use_triangle_ineq, size_t reference_point, distvector_t& reference_distances_unsorted,
     featurescale_t &featurescale, const std::vector<node_meta> &nodemeta,
     double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
-  std::vector<size_t> result_indizes;
+  distvector_t result_indizes;
   nodemetaout.resize(test_data.n_rows);
 
   for (size_t i = 0; i < test_data.n_rows; ++i) {
@@ -278,18 +278,19 @@ void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data
     }
 
     for (size_t j = 0; j < data.n_rows; ++j) {
+      // TODO make this use get_next as well
       if (use_triangle_ineq && (fabs(reference_distances_unsorted[j].first - testpoint_to_reference) > eps)) {
         continue;
       }
       double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
       if (dist <= eps) {
-        result_indizes.push_back(j);
+        result_indizes.push_back(make_pair(dist, j));
       }
     }
 
     map<string, size_t> occurences;
     for (size_t j = 0; j < result_indizes.size(); ++j) {
-      string cl = nodemeta[result_indizes[j]].cluster;
+      string cl = nodemeta[result_indizes[j].second].cluster;
       occurences[cl]++;
     }
     if (!occurences.size()) {
@@ -304,7 +305,7 @@ void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data
       }
     }
     if (collect_neighbours) {
-      nodemetaout[i].neighbour_ids = result_indizes;
+      nodemetaout[i].neighbours = result_indizes;
     }
     nodemetaout[i].cluster = cur_max_lbl;
   }
@@ -399,7 +400,7 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
     }
 
     if (collect_neighbours) {
-      nodemetaout[i].neighbour_ids.reserve(result_indizes.size());
+      nodemetaout[i].neighbours.reserve(result_indizes.size());
     }
     size_t cur_max = 0;
     string cur_max_lbl;
@@ -409,7 +410,7 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
       string cl = nodemeta[result_indizes[j].second].cluster;
       occurences[cl]++;
       if (collect_neighbours) {
-        nodemetaout[i].neighbour_ids.push_back(result_indizes[j].second);
+        nodemetaout[i].neighbours.push_back(result_indizes[j]);
       }
       // k+1: if the cluster is ambiguous, collect more neighbours.
       // Check if we have reached k (assuming that we have more than k neighbours)
@@ -721,13 +722,13 @@ int run_clusterer(const options& o) {
         FILE *f = fopen(o.test_write_neighbours_file.c_str(), "w");
         for (size_t i = 0; i < nodemetaout.size(); ++i) {
           bool first = true;
-          for (std::vector<size_t>::iterator it = nodemetaout[i].neighbour_ids.begin();
-                it != nodemetaout[i].neighbour_ids.end(); ++it)  { 
+          for (distvector_t::iterator it = nodemetaout[i].neighbours.begin();
+                it != nodemetaout[i].neighbours.end(); ++it)  { 
             if (first) {
               first = false;
-              fprintf(f, "%lu", *it);
+              fprintf(f, "%lu[%f]", it->second, it->first);
             } else {
-              fprintf(f, " %lu", *it);
+              fprintf(f, " %lu[%f]", it->second, it->first);
             }
           }
           fprintf(f, "\n");
