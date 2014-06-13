@@ -16,7 +16,7 @@
 #include <cfloat>
 #include <algorithm>
 #include <map> // pair
-#include "readline.hpp"
+#include "types.hpp"
 #include "matrix-types.hpp"
 
 #ifdef DEBUG
@@ -30,24 +30,7 @@
 #define SHOW_PROGRESS_UPDATE
 #endif
  
-
 using namespace std;
-//using namespace arma;
-
-
-typedef double datatype; // TODO only int supported for now (atoi function calls)
-typedef arma::Mat<double> distancematrix_t;
-typedef std::vector<pair<double, size_t> > distvector_t;
-typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
-
-
-struct node_meta {
-  node_meta() : cluster(""), visited(false), noise(false) { }
-  string cluster;
-  bool visited;
-  bool noise;
-  distvector_t neighbours;
-};
 
 /* }}} */
 /* trace code {{{ */
@@ -104,40 +87,6 @@ void progress(const string &msg, size_t counter, size_t total = 0) {
 /* }}} */
 /* file import {{{ */
 
-void load_file_clusters(const std::string filename, std::vector<node_meta>& nodeinfo) {
-  FILE *fp;
-  char * line = NULL;
-  size_t len = 0;
-  ssize_t read;
-
-  fp = fopen(filename.c_str(), "r");
-  if (fp == NULL) {
-    throw runtime_error("Could not open cluster label file " + filename);
-  }
-
-  unsigned int row = 0;
-
-  while ((read = getline(&line, &len, fp)) != -1)  {
-    // remove trailing whitespace
-    size_t offset = strlen(line);
-    while (offset-- > 0) {
-      if (isspace(line[offset])) {
-        line[offset] = '\0';
-      }
-    }
-    if (!strlen(line)) {
-      throw runtime_error("Empty line in cluster label file: #" + boost::lexical_cast<string>(row));
-    }
-    if (nodeinfo.size() <= row) {
-      throw runtime_error("Too many rows in cluster label file");
-    }
-    nodeinfo[row].cluster = string(line);
-    row++;
-  }
-  if (row != nodeinfo.size()) {
-    throw runtime_error("Too few lines in cluster label file");
-  }
-}
 
 /* }}} */
 /* distance matrix {{{ */
@@ -813,6 +762,7 @@ int main(int argc, char ** argv) {
     }
   } catch (const runtime_error& e) {
     cerr << "Error: " << e.what() << endl;
+    return 1;
   }
 }
 /*}}}*/

@@ -1,3 +1,5 @@
+#ifndef HAVE_MATRIX_TYPES_HPP
+#define HAVE_MATRIX_TYPES_HPP
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -14,7 +16,7 @@
 #include <cfloat>
 #include <algorithm>
 #include <map> // pair
-#include "readline.hpp"
+#include "types.hpp"
 
 #ifdef DEBUG
 #define DBG(x) x
@@ -24,8 +26,8 @@
 
 using namespace std;
 
-typedef double datatype; // TODO only int supported for now (atoi function calls)
-typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
+
+void load_file_clusters(const std::string filename, std::vector<node_meta>& nodeinfo);
 
 template <class T>
 class simplematrix {
@@ -108,56 +110,8 @@ template<int norm>
 struct mt_sparse_simple {
   typedef simplematrix<double> type;
 
-  static void load_file(const string& infilename, type& out, featurescale_t &featurescale) {
-    FILE *fp;
-    char * line = NULL;
-    size_t len = 0;
-    ssize_t read;
+  static void load_file(const string& infilename, type& out, featurescale_t &featurescale);
 
-    fp = fopen(infilename.c_str(), "r");
-    if (fp == NULL) {
-      throw runtime_error("Could not open file " + infilename);
-    }
-
-    read = getline(&line, &len, fp);
-
-    if (read == -1) {
-      throw std::runtime_error("Could not read file (empty?)");
-    }
-
-    int nrows, ncols;
-    char * tk = strtok(line, " ");
-    nrows = atoi(tk);
-    tk = strtok(NULL, " ");
-    ncols = atoi(tk);
-    tk = strtok(NULL, " ");
-    if (tk == NULL || strlen(tk) <= 1) {
-      throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
-    }
-
-    /* nnzelem = atoi(tk); */
-
-    out = type(nrows, ncols);
-    
-    featurescale.resize(ncols, 1.0);
-    // TODO use batch insert format
-    int row = 0;
-    while ((read = getline(&line, &len, fp)) != -1)  {
-      type::row_type new_row;
-      char* next_tk = strtok(line, " ");
-
-      while (next_tk) {
-        int idx = atoi(next_tk);
-        next_tk = strtok(NULL, " ");
-        int val = atoi(next_tk);
-        new_row.push_back(make_pair(idx-1, val));
-        featurescale[idx-1] = max((double)featurescale[idx-1], (double)val);
-        next_tk = strtok(NULL, " ");
-      }
-      out.set_row(row, new_row);
-      ++row;
-    }
-  }
   static double calculate_distance(const type &m, size_t row1, const type &m2, size_t row2, const featurescale_t& /*featurescale*/) 
   { 
     typename type::row_type::const_iterator r1 = m.row_begin(row1);
@@ -193,69 +147,14 @@ template <int norm>
 struct mt_sparse {
   typedef typename arma::SpMat<double> type;
 
-  static void load_file(const string& infilename, type& out, featurescale_t &featurescale) {
-    FILE *fp;
-    char * line = NULL;
-    size_t len = 0;
-    ssize_t read;
-
-    fp = fopen(infilename.c_str(), "r");
-    if (fp == NULL) {
-      throw runtime_error("Could not open file " + infilename);
-    }
-
-    read = getline(&line, &len, fp);
-
-    if (read == -1) {
-      throw std::runtime_error("Could not read file (empty?)");
-    }
-
-    int nrows, ncols, nnzelem;
-    char * tk = strtok(line, " ");
-    nrows = atoi(tk);
-    tk = strtok(NULL, " ");
-    ncols = atoi(tk);
-    tk = strtok(NULL, " ");
-    if (tk == NULL || strlen(tk) <= 1) {
-      throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
-    }
-
-    nnzelem = atoi(tk);
-
-    arma::umat locations(nnzelem, 2);
-    arma::vec values(nnzelem);
-    
-    featurescale.resize(ncols, 1.0);
-    // TODO use batch insert format
-    int row = 0;
-    while ((read = getline(&line, &len, fp)) != -1)  {
-      char* next_tk = strtok(line, " ");
-
-      while (next_tk) {
-        int idx = atoi(next_tk);
-        next_tk = strtok(NULL, " ");
-        int val = atoi(next_tk);
-        //out(row, idx-1) = val;
-        locations << row << idx-1 << arma::endr;
-        values << (double)val;
-        featurescale[idx-1] = max((double)featurescale[idx-1], (double)val);
-        next_tk = strtok(NULL, " ");
-      }
-      ++row;
-    }
-    if (row != nrows) {
-      // don't throw an exception here, someone might just have wanted a smaller input file
-      // and trimmed it ;)
-      cerr << endl << "WARNING: number of expected rows does not match actual rows in " <<
-        infilename << ", file might be damaged" << endl;
-    }
-    out = type(locations.t(), values);
-  }
+  static void load_file(const string& infilename, type& out, featurescale_t &featurescale);
 
   static double calculate_distance(const type &m, size_t row1, const type &m2, size_t row2, const featurescale_t& /*featurescale*/) {
+    // Note: the following doesn't work (incorrect results) apparently:
     //arma::SpMat<datatype> z = m.row(row1);
     //z -= m2.row(row2);
     //return arma::norm(z, 1);
+    // and the following is really slow. Hence mt_sparse_simple.
     typename type::const_row_iterator r1 = m.begin_row(row1);
     typename type::const_row_iterator r2 = m2.begin_row(row2);
 
@@ -292,59 +191,7 @@ struct mt_dense {
   static double calculate_distance(const type &m, size_t row1, const type &m2, size_t row2, const featurescale_t& /*featurescale*/) {
     return arma::norm(m.row(row1) - m2.row(row2), norm);
   }
-
-  static void load_file(const string& infilename, type& out, featurescale_t &featurescale) {
-    // this function reads a dense matrix into a sparse filetype, until i can figure out if there
-    // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
-    // both using the sparse datatype and the actual "read" implementation used here.
-    FILE *fp;
-    char * line = NULL;
-    size_t len = 0;
-    ssize_t read;
-
-    fp = fopen(infilename.c_str(), "r");
-    if (fp == NULL) {
-      throw runtime_error("Could not open file " + infilename);
-    }
-
-    unsigned int row = 0;
-    std::vector<std::vector<datatype> > data;
-
-    while ((read = getline(&line, &len, fp)) != -1)  {
-      char* next_tk = strtok(line, " ");
-      unsigned int idx = 0;
-      std::vector<datatype> inner;
-      while (next_tk) {
-        datatype val = atoi(next_tk);
-        inner.push_back(val);
-
-        if (featurescale.size() <= idx) {
-          featurescale.push_back(val);
-        } else {
-          featurescale[idx] = max((double)featurescale[idx], (double)val);
-        }
-        idx++;
-        next_tk = strtok(NULL, " ");
-      }
-
-      if (data.size() && inner.size() != data[0].size()) {
-        throw runtime_error("matrix dimension mismatch on row " + boost::lexical_cast<string>(row+1));
-      }
-      ++row;
-      data.push_back(inner);
-    }
-
-    if (!data.size()) {
-      throw runtime_error("Input file didn't contain anything apparently");
-    }
-    out = type(row, data[0].size());
-
-    for (unsigned int i = 0; i < data.size(); ++i) {
-      for (unsigned int j = 0; j < data[i].size(); ++j) {
-        out(i,j) = data[i][j]; // how very efficient! :/
-      }
-    }
-  }
+  static void load_file(const string& infilename, type& out, featurescale_t &featurescale);
 };
 
 
@@ -352,4 +199,8 @@ extern template struct mt_dense<1>;
 extern template struct mt_dense<2>;
 extern template struct mt_sparse<1>;
 extern template struct mt_sparse<2>;
+extern template struct mt_sparse_simple<1>;
+extern template struct mt_sparse_simple<2>;
+#endif // HAVE_MATRIX_TYPES_HPP
+
 /* vim: set fdm=marker: */
