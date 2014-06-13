@@ -25,6 +25,12 @@
 #define DBG(x)
 #endif
 
+#ifndef _WIN32
+// not sure how this behaves with windows, so better disable it for now.
+#define SHOW_PROGRESS_UPDATE
+#endif
+ 
+
 using namespace std;
 //using namespace arma;
 
@@ -57,25 +63,43 @@ void trace(const char *tp) {
 void dump_trace() {
   trace("");
   for (size_t i = 0; i < trace_points.size()-1; ++i) {
-    cout << trace_points[i] << "\t" << (trace_tstamps[i+1]-trace_tstamps[i])/(double)CLOCKS_PER_SEC << endl;
+    printf("%-30s %3.4f\n", trace_points[i], (trace_tstamps[i+1]-trace_tstamps[i])/(double)CLOCKS_PER_SEC);
   }
 }
 
-void progress(const string& msg, size_t counter, size_t total) {
+#ifdef SHOW_PROGRESS_UPDATE
+void progress(const string& msg, size_t counter, size_t total = 0) {
   static string last_progress;
-  if (counter % 10 != 0) {
+  if (counter % 50 != 0) {
     return;
   }
   if (string(msg) != last_progress) {
     if (last_progress.size()) {
-      cout << last_progress << " done. Next: " << msg << endl;
+      printf("%20s done.                                                        \n", last_progress.c_str());
     }
     last_progress = msg;
   } else {
-    cout << msg << ": " << (100.0*counter/total) <<"% (" << counter << " of " << total <<")\r";
+    printf("%20s: %5.1f%% (%lu of %lu)\r", msg.c_str(), (total==0)?100.0:100.0*counter/total, counter, total);
     cout.flush();
   }
 }
+#else
+void progress(const string &msg, size_t counter, size_t total = 0) {
+  static string last_progress;
+  if (counter % 500 != 0) {
+    return;
+  }
+  if (string(msg) != last_progress) {
+    if (last_progress.size()) {
+      printf("%20s done.\n", last_progress.c_str());
+    }
+    last_progress = msg;
+  } else {
+    printf("%20s: %5.1f%% (%lu of %lu)\n", msg.c_str(), (total==0)?100.0:100.0*counter/total, counter, total);
+    cout.flush();
+  }
+}
+#endif
 
 /* }}} */
 /* file import {{{ */
@@ -343,7 +367,7 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
       size_t l = 0, r = reference_distances_sorted.size();
       // 0 1 2 4 5
       // -> 3
-      size_t m;
+      size_t m = 0;
       while (l != r) {
         m = (l+r)/2;
         if (testpoint_to_reference < reference_distances_sorted[m].first) {
@@ -380,11 +404,19 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
           // real distance of the k-th farthest element that we have already calculated.
           break;
         }
+
         size_t real_index = reference_distances_sorted[closest_object.first].second;
         double dist = mt::calculate_distance(data, i, test_data, real_index, featurescale);
+        
+        if (result_indizes.size() == k && result_indizes[k-1].first <= dist) {
+          continue;
+        }
 
         if (result_indizes.size() < k) {
           result_indizes.push_back(make_pair(dist, real_index));
+          if (result_indizes.size() == k) {
+            sort(result_indizes.begin(), result_indizes.end());
+          }
         } else {
           result_indizes[k-1] = make_pair(dist, real_index);
           sort(result_indizes.begin(), result_indizes.end());
@@ -604,7 +636,7 @@ int run_clusterer(const options& o) {
     featurescale.insert(featurescale.end(), data.n_cols, 1.0);
   }
 
-  cout << "input is " << data.n_rows << "x" << data.n_cols << endl;
+  cout << "Input matrix size is: " << data.n_rows << "x" << data.n_cols << endl;
 
   // basepoints for triangle inequality
   distvector_t reference_distances;
@@ -613,6 +645,7 @@ int run_clusterer(const options& o) {
   if (o.use_triangle_inequality) {
     trace("create reference distances");
     for (unsigned int i = 0; i < data.n_rows; ++i) {
+      progress("creating reference distances", i, data.n_rows);
       reference_distances[i] = make_pair(mt::calculate_distance(data, 0, data, i, featurescale), i);
       DBG(cout << reference_distances[i].first << " ";)
     }
@@ -738,6 +771,7 @@ int run_clusterer(const options& o) {
     }
   }
 
+  progress("", 0, 0);
   dump_trace();
 
   return 0;

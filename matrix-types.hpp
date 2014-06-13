@@ -125,7 +125,7 @@ struct mt_sparse_simple {
       throw std::runtime_error("Could not read file (empty?)");
     }
 
-    int nrows, ncols, nnzelem;
+    int nrows, ncols;
     char * tk = strtok(line, " ");
     nrows = atoi(tk);
     tk = strtok(NULL, " ");
@@ -135,7 +135,7 @@ struct mt_sparse_simple {
       throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
     }
 
-    nnzelem = atoi(tk);
+    /* nnzelem = atoi(tk); */
 
     out = type(nrows, ncols);
     
@@ -242,6 +242,12 @@ struct mt_sparse {
         next_tk = strtok(NULL, " ");
       }
       ++row;
+    }
+    if (row != nrows) {
+      // don't throw an exception here, someone might just have wanted a smaller input file
+      // and trimmed it ;)
+      cerr << endl << "WARNING: number of expected rows does not match actual rows in " <<
+        infilename << ", file might be damaged" << endl;
     }
     out = type(locations.t(), values);
   }
