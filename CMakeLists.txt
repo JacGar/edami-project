@@ -3,7 +3,7 @@ FIND_PACKAGE( Boost COMPONENTS program_options REQUIRED )
 FIND_PACKAGE( Armadillo REQUIRED )
 INCLUDE_DIRECTORIES( ${Boost_INCLUDE_DIR} ${ARMADILLO_INCLUDE_DIR} )
 
-ADD_EXECUTABLE( cluster cluster.cpp )
+ADD_EXECUTABLE( cluster cluster.cpp matrix-types.cpp )
 
 TARGET_LINK_LIBRARIES( cluster ${Boost_LIBRARIES} ${ARMADILLO_LIBRARIES} )
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
