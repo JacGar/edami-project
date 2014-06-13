@@ -3,12 +3,8 @@
 #define _GNU_SOURCE
 #endif
 #include <boost/program_options.hpp>
-#include <boost/numeric/ublas/matrix_sparse.hpp>
-#include <boost/numeric/ublas/io.hpp>
-#include <boost/numeric/ublas/matrix_proxy.hpp>
-#include <boost/numeric/ublas/symmetric.hpp>
-#include <boost/numeric/ublas/vector.hpp>
 #include <boost/lexical_cast.hpp>
+#include <armadillo>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -20,6 +16,8 @@
 #include <cfloat>
 #include <algorithm>
 #include <map> // pair
+#include "readline.hpp"
+#include "matrix-types.hpp"
 
 #ifdef DEBUG
 #define DBG(x) x
@@ -28,7 +26,7 @@
 #endif
 
 using namespace std;
-using namespace boost::numeric::ublas;
+//using namespace arma;
 
 template <class T>
 class slowmatrix {
@@ -102,181 +100,22 @@ public:
     }
 };
 
-typedef int datatype; // TODO only int supported for now (atoi function calls)
-//typedef compressed_matrix<datatype> matrix_t;
-typedef slowmatrix<datatype> matrix_t;
-typedef symmetric_matrix<double> distancematrix_t;
+typedef double datatype; // TODO only int supported for now (atoi function calls)
+typedef arma::Mat<double> distancematrix_t;
 typedef std::vector<pair<double, unsigned int> > distvector_t;
 typedef std::vector<datatype> featurescale_t; // holds maximum value. TODO this assumes that all values start with 0
+
 
 struct node_meta {
   node_meta() : cluster(""), visited(false), noise(false) { }
   string cluster;
   bool visited;
   bool noise;
+  std::vector<size_t> neighbour_ids;
 };
 
 /* }}} */
-
 /* file import {{{ */
-
-#ifdef _WIN32
-/* This code is public domain -- Will Hartung 4/9/09 */
-size_t getline(char **lineptr, size_t *n, FILE *stream) {
-    char *bufptr = NULL;
-    char *p = bufptr;
-    size_t size;
-    int c;
-
-    if (lineptr == NULL) {
-    	return -1;
-    }
-    if (stream == NULL) {
-    	return -1;
-    }
-    if (n == NULL) {
-    	return -1;
-    }
-    bufptr = *lineptr;
-    size = *n;
-
-    c = fgetc(stream);
-    if (c == EOF) {
-    	return -1;
-    }
-    if (bufptr == NULL) {
-    	bufptr = (char*)malloc(128);
-    	if (bufptr == NULL) {
-    		return -1;
-    	}
-    	size = 128;
-    }
-    p = bufptr;
-    while(c != EOF) {
-    	if ((p - bufptr) > (size - 1)) {
-    		size = size + 128;
-    		bufptr = (char*)realloc(bufptr, size);
-    		if (bufptr == NULL) {
-    			return -1;
-    		}
-    	}
-    	*p++ = c;
-    	if (c == '\n') {
-    		break;
-    	}
-    	c = fgetc(stream);
-    }
-
-    *p++ = '\0';
-    *lineptr = bufptr;
-    *n = size;
-
-    return p - bufptr - 1;
-}
-#endif
-
-void load_file_cluto(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
-  FILE *fp;
-  char * line = NULL;
-  size_t len = 0;
-  ssize_t read;
-
-  fp = fopen(infilename.c_str(), "r");
-  if (fp == NULL) {
-    throw runtime_error("Could not open file " + infilename);
-  }
-
-  read = getline(&line, &len, fp);
-
-  if (read == -1) {
-    throw runtime_error("Could not read file (empty?)");
-  }
-
-  int nrows, ncols, nnzelem;
-  char * tk = strtok(line, " ");
-  nrows = atoi(tk);
-  tk = strtok(NULL, " ");
-  ncols = atoi(tk);
-  tk = strtok(NULL, " ");
-  if (tk == NULL || strlen(tk) <= 1) {
-    throw runtime_error("This is a CLUTO dense matrix, but this tool only supports reading sparse atm");
-  }
-
-  nnzelem = atoi(tk);
-
-  out = matrix_t(nrows, ncols, nnzelem);
-  featurescale.resize(ncols, 1.0);
-
-  int row = 0;
-  while ((read = getline(&line, &len, fp)) != -1)  {
-    char* next_tk = strtok(line, " ");
-
-    while (next_tk) {
-      int idx = atoi(next_tk);
-      next_tk = strtok(NULL, " ");
-      int val = atoi(next_tk);
-      out(row, idx-1) = val;
-      featurescale[idx-1] = max((double)featurescale[idx-1], (double)val);
-      next_tk = strtok(NULL, " ");
-    }
-    ++row;
-  }
-}
-
-
-template<typename dtype>
-void load_file_plain(const string& infilename, matrix_t& out, featurescale_t &featurescale) {
-  // this function reads a dense matrix into a sparse filetype, until i can figure out if there
-  // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
-  // both using the sparse datatype and the actual "read" implementation used here.
-  FILE *fp;
-  char * line = NULL;
-  size_t len = 0;
-  ssize_t read;
-
-  fp = fopen(infilename.c_str(), "r");
-  if (fp == NULL) {
-    throw runtime_error("Could not open file " + infilename);
-  }
-
-  unsigned int row = 0;
-  std::vector<std::vector<dtype> > data;
-
-  while ((read = getline(&line, &len, fp)) != -1)  {
-    char* next_tk = strtok(line, " ");
-    unsigned int idx = 0;
-    std::vector<dtype> inner;
-    while (next_tk) {
-      dtype val = atoi(next_tk);
-      inner.push_back(val);
-
-      if (featurescale.size() <= idx) {
-        featurescale.push_back(val);
-      } else {
-        featurescale[idx] = max((double)featurescale[idx], (double)val);
-      }
-      idx++;
-      next_tk = strtok(NULL, " ");
-    }
-
-    if (data.size() && inner.size() != data[0].size()) {
-      throw runtime_error("matrix dimension mismatch on row " + boost::lexical_cast<string>(row+1));
-    }
-    ++row;
-    data.push_back(inner);
-  }
-
-  if (!data.size()) {
-    throw runtime_error("Input file didn't contain anything apparently");
-  }
-  out = matrix_t(row, data[0].size(), row*data[0].size());
-
-  for (unsigned int i = 0; i < data.size(); ++i) {
-    for (unsigned int j = 0; j < data[i].size(); ++j) {
-      out(i,j) = data[i][j]; // how very efficient! :/
-    }
-  }
-}
 
 void load_file_clusters(const std::string filename, std::vector<node_meta>& nodeinfo) {
   FILE *fp;
@@ -316,8 +155,7 @@ void load_file_clusters(const std::string filename, std::vector<node_meta>& node
 /* }}} */
 /* distance implementations {{{ */
 
-typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
-
+//typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
 /*
 double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
     // 45 seconds for n rows
@@ -351,6 +189,7 @@ double eucledian_distance_builtin_2(matrix_t &m, long unsigned int row1, matrix_
     return norm_2(row1_proxy - row2_proxy);
 }
 */
+/*
 double manhattan_distance_manual(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
   // about 18 seconds for n rows. Adding const does not yield any improvement.
   // is there a way to access rows directly, not with this fucking magic thing?
@@ -569,17 +408,19 @@ out:
   DBG(cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;)
   return aggr::finalize(dist);
 }
+*/
+
 
 /*}}}*/
-/** distance matrix {{{ */
-template<distance_fun distFun>
-void create_distance_matrix(matrix_t &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
-  size_t ds1 = data.size1();
+/* distance matrix {{{ */
+template<class mt>
+void create_distance_matrix(typename mt::type &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
+  size_t ds1 = data.n_rows;
   for (size_t i = 0; i < ds1; ++i) {
     cout << "processing line #" << i << endl;
     for (size_t j = 0; j < i; ++j) {
       if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
-        dst(i,j) = distFun(data, i, j, featurescale);
+        dst(i,j) = mt::calculate_distance(data, i, data, j, featurescale);
       }
     }
     dst(i,i) = 0;
@@ -594,7 +435,8 @@ double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
   return d;
 }
 /**}}}*/
-/** get_next {{{*/
+
+/* get_next {{{*/
 /**
  * Helper function to walk left/right in a distance array, gradually returning values that are farther away.
  * Initialize this function by setting lbound and rbound to the offset in the vector where the value mid_value
@@ -633,7 +475,6 @@ pair<unsigned int, double> get_next(const distvector_t &distvec, const double mi
   throw runtime_error("obligatory 'this should never happen'");
 }
 /**}}}*/
-
 /* DBSCAN {{{ */
 /**
  * get the neighbours for a given distvector index within range eps, excluding the point itself.
@@ -710,21 +551,30 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 
 /*}}}*/
 /* membership tests {{{*/
-template<class aggr>
-void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& reference_distances_unsorted, size_t reference_point, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta, double eps, std::vector<node_meta> &nodemetaout) {
+/**
+ * On API design: "in a good API, you can guess the purpose of each parameter just by looking at the
+ * type signature, ignoring the variable names"
+ *
+ * clearly not the case here.
+ */
+template<class mt>
+void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data, size_t reference_point,
+    distvector_t& reference_distances_unsorted, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta,
+    double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   std::vector<size_t> result_indizes;
-  nodemetaout.resize(test_data.size1());
+  nodemetaout.resize(test_data.n_rows);
   for (size_t i = 0; i < test_data.size1(); ++i) {
     double testpoint_to_reference = 0;
-    //if (reference_distances_unsorted.size()) {
-    //   testpoint_to_reference = distance_manual_cached_2<aggr>(data, reference_point, test_data, i, featurescale);
-    //}
+    result_indizes.clear();
+    if (reference_distances_unsorted.size()) {
+       testpoint_to_reference = mt::calculate_distance(data, reference_point, test_data, i, featurescale);
+    }
 
     for (size_t j = 0; j < data.size1(); ++j) {
       if (fabs(reference_distances_unsorted[j].first - testpoint_to_reference) <= eps) {
         continue;
       }
-      double dist = distance_find_2<aggr>(data, j, test_data, i, featurescale);
+      double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
       if (dist <= eps) {
         result_indizes.push_back(j);
       }
@@ -745,6 +595,82 @@ void test_epsneighbourhood(matrix_t& data, matrix_t &test_data, distvector_t& re
         cur_max_lbl = it->first;
         cur_max = it->second;
       }
+    }
+    if (collect_neighbours) {
+      nodemetaout[i].neighbour_ids = result_indizes;
+    }
+    nodemetaout[i].cluster = cur_max_lbl;
+  }
+} 
+
+template<class mt>
+void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data, distvector_t& /*reference_distances*/, featurescale_t &featurescale,
+    const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
+  /* TODO triangle inequality:
+   * for (t test_data) {
+   *   this_ref_distance = distance(reference_point, t);
+   *   distvector_t result_indizes(k);
+   *   for (d = getnext(data)) {
+   *     if (fabs(reference_distances(d)-this_ref_distance) > eps)
+   *       break;
+   *     real_dist = distance(t, d);
+   *     if (real_dist < result_indizes[result_indizes.size()-1].first) {
+   *       result_indizes[result_indizes.size()-1] = make_pair(real_dist, d)
+   *       sort(result_indizes.begin(), result_indizes.end());
+   *     }
+   *   } // rest as below
+   * }
+   */
+  distvector_t result_indizes;
+  nodemetaout.resize(test_data.n_rows);
+  for (size_t i = 0; i < test_data.n_rows; ++i) {
+    result_indizes.clear();
+    for (size_t j = 0; j < data.n_rows; ++j) {
+      double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
+      result_indizes.push_back(make_pair(dist, j));
+    }
+
+    sort(result_indizes.begin(), result_indizes.end());
+    if (collect_neighbours) {
+      nodemetaout[i].neighbour_ids.reserve(result_indizes.size());
+    }
+    size_t cur_max = 0;
+    string cur_max_lbl;
+
+    map<string, size_t> occurences;
+    for (size_t j = 0; j < result_indizes.size() && j < k; ++j) {
+      string cl = nodemeta[result_indizes[j].second].cluster;
+      occurences[cl]++;
+      if (collect_neighbours) {
+        nodemetaout[i].neighbour_ids.push_back(result_indizes[j].second);
+      }
+      // k+1: if the cluster is ambiguous, collect more neighbours.
+      // Check if we have reached k (assuming that we have more than k neighbours)
+      if (j < k && j+1 < result_indizes.size()) {
+        continue;
+      }
+      std::vector<ssize_t> hist;
+      for (std::map<string, size_t>::iterator it = occurences.begin(); it != occurences.end(); ++it) {
+        hist.push_back(it->second);
+      }
+      if (hist.size() < 2) {
+        break;
+      }
+      sort(hist.begin(), hist.end());
+      if (hist[hist.size()-2] != hist[hist.size()-1]) {
+        break;
+      }
+    }
+
+    for (std::map<string, size_t>::iterator it = occurences.begin(); it != occurences.end(); ++it) {
+      if (it->second > cur_max) {
+        cur_max_lbl = it->first;
+        cur_max = it->second;
+      }
+    }
+
+    if (!occurences.size()) {
+      nodemetaout[i].noise = true;
     }
     nodemetaout[i].cluster = cur_max_lbl;
   }
@@ -768,7 +694,7 @@ void dump_trace() {
 }
 
 /* }}} */
-/* init code {{{ */
+/* cluster options & command line parsing {{{ */
 namespace po = boost::program_options;
 
 class options {
@@ -786,10 +712,13 @@ class options {
     double test_membership_eps;
     string test_membership_filename;
     string label_file;
+    string test_write_neighbours_file;
+    bool dump_distancematrix;
 
     options() {
       use_triangle_inequality = true;
       use_feature_scaling = false;
+      dump_distancematrix = false;
     }
     int init(int argc, char ** argv) { 
       po::options_description desc("program options");
@@ -804,16 +733,19 @@ class options {
                                                                       "  cluto - CLUTO file format (sparse)\n"
                                                                       "  plain - space seperated features, each in a new line.")
         ("norm,n", po::value<int>()->default_value(1), "norm to use (1 or 2)")
-        ("cluster-method,c", po::value<string>()->default_value("dbscan"), "Cluster method. Possible values are\n"
+        ("cluster-method,c", po::value<string>()->default_value("none"), "Cluster method. Possible values are\n"
                                                                           "  dbscan - cluster using dbscan\n"
-                                                                          "  file   - read labels from file\n")
+                                                                          "  file   - read labels from file\n"
+                                                                          "  none   - don't perform clustering\n")
         ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
-        ("test-membership", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
+        ("test", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
                                                 "  no  - don't test membership\n"
                                                 "  eps - use eps neighbourhood\n"
                                                 "  k   - use k-nearest-neighbours")
-        ("test-file", po::value<string>(), "file to read membership test values from")
+        ("test-file", po::value<string>(), "file to read membership test values from. If not set, the main input file will be used.")
         ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
+        ("test-neighbours-out", po::value<string>()->default_value(""), "write neighbours to <file>")
+        ("dump-distancematrix", "dump distancematrix to distancematrix.out")
       ;
 
       po::positional_options_description p;
@@ -857,7 +789,7 @@ class options {
           return 1;
         }
         label_file = vm["labels"].as<string>();
-      } else if (cluster_method != "dbscan") {
+      } else if (cluster_method != "dbscan" && cluster_method != "none") {
         cerr << "Error: invalid value for --cluster-method" << endl;
         cerr << desc << endl;
         return 1;
@@ -869,10 +801,11 @@ class options {
       eps = vm["epsilon"].as<double>();
       minpts = vm["minpts"].as<unsigned int>();
 
-      test_membership = vm["test-membership"].as<string>();
+      test_membership = vm["test"].as<string>();
       test_membership_k = 0;
       test_membership_eps = 0.0;
       test_membership_filename = "";
+      test_write_neighbours_file = vm["test-neighbours-out"].as<string>();
 
       if (test_membership != "no") {
         if (test_membership == "eps") {
@@ -889,28 +822,28 @@ class options {
           throw runtime_error("unsupported membership test type: " + test_membership);
         }
         if (!vm.count("test-file")) {
-          throw runtime_error("membership test requires --test-file");
+          test_membership_filename = infile; 
+        } else {
+          test_membership_filename = vm["test-file"].as<string>();
         }
-        test_membership_filename = vm["test-file"].as<string>();
+      }
+
+      if (vm.count("dump-distancematrix")) {
+        dump_distancematrix = true;
       }
       return 0;
     }
 };
+/*}}}*/
+/* main {{{*/
 
-template<class norm_aggregator>
+template<class mt>
 int run_clusterer(const options& o) {
   trace("load file");
-  matrix_t data;
+  typename mt::type data;
   featurescale_t featurescale;
   try {
-    if (o.filetype == "cluto") {
-      load_file_cluto(o.infile, data, featurescale);
-    } else if (o.filetype == "plain") {
-      load_file_plain<unsigned int>(o.infile, data, featurescale);
-    } else {
-      cerr << "Error: unknown file type " << o.filetype << endl;
-      return 1;
-    }
+    mt::load_file(o.infile, data, featurescale);
   } catch (const exception& c) {
     cout << "Error: " << c.what() << endl;
     return 1;
@@ -918,20 +851,19 @@ int run_clusterer(const options& o) {
 
   if (!o.use_feature_scaling) {
     featurescale.clear();
-    featurescale.insert(featurescale.end(), data.size2(), 1.0);
+    featurescale.insert(featurescale.end(), data.n_cols, 1.0);
   }
 
-  cout << "input is " << data.size1() << "x" << data.size2() << endl;
+  cout << "input is " << data.n_rows << "x" << data.n_cols << endl;
 
   // basepoints for triangle inequality
   distvector_t reference_distances;
-  reference_distances.resize(data.size1());
+  reference_distances.resize(data.n_rows);
 
   if (o.use_triangle_inequality) {
     trace("create reference distances");
-    for (unsigned int i = 0; i < data.size1(); ++i) {
-      cout << i << endl;
-      reference_distances[i] = make_pair(distance_manual_cached<norm_aggregator>(data, 0, i, featurescale), i);
+    for (unsigned int i = 0; i < data.n_rows; ++i) {
+      reference_distances[i] = make_pair(mt::calculate_distance(data, 0, data, i, featurescale), i);
       DBG(cout << reference_distances[i].first << " ";)
     }
     DBG(cout << endl;)
@@ -941,85 +873,116 @@ int run_clusterer(const options& o) {
     }
   }
 
-  trace("create distancematrix");
-  distancematrix_t distancematrix(data.size1(), data.size1());
-  create_distance_matrix<distance_manual_cached<norm_aggregator> >(data, reference_distances, o.eps, featurescale, distancematrix);
 
-  trace("sort reference distances");
-  
-  distvector_t reference_distances_unsorted;
-  if (o.test_membership != "no") {
-    reference_distances_unsorted = reference_distances;
-  }
-  if (o.use_triangle_inequality) {
-    sort(reference_distances.begin(), reference_distances.end());
-  }
-
-  std::vector<node_meta> metadata(data.size1());
+  std::vector<node_meta> metadata(data.n_rows);
   if (o.cluster_method == "dbscan") {
+    trace("create distancematrix");
+    distancematrix_t distancematrix(data.n_rows, data.n_rows);
+    create_distance_matrix<mt>(data, reference_distances, o.eps, featurescale, distancematrix);
+    distancematrix = symmatu(distancematrix);
+    
+    trace("sort reference distances");
+    distvector_t reference_distances_sorted = reference_distances;
+    if (o.use_triangle_inequality) {
+      sort(reference_distances.begin(), reference_distances.end());
+    }
+
     trace("DBSCAN");
     dbscan(reference_distances, distancematrix, o.eps, o.minpts, metadata);
+    if (o.dump_distancematrix) {
+      trace("dumping distance matrix");
+      FILE *f = fopen("distmatrix.out", "w");
+      bool first;
+      for (size_t i = 0; i < distancematrix.n_rows; ++i) {
+        first = true;
+        for (size_t j = 0; j < distancematrix.n_cols; ++j) {
+          if (first) {
+            fprintf(f, "%f", distancematrix(i,j));
+            first = false;
+          } else {
+            fprintf(f, " %f", distancematrix(i,j));
+          }
+        }
+        fputs("\n", f);
+      }
+      fclose(f);
+    }
+
+    trace("DBSCAN output");
+    {
+      FILE *f = fopen("cluster.out", "w");
+      for (size_t i = 0; i < metadata.size(); ++i) {
+        fprintf(f, "%s%s\n", metadata[i].cluster.c_str(), metadata[i].noise?" (noise)":"");
+      }
+      fclose(f);
+    }
   } else if (o.cluster_method == "file") {
     trace("label-load");
     load_file_clusters(o.label_file, metadata);
-  } else {
+  } else if (o.cluster_method != "none"){
     throw runtime_error("unsupported clustering method " + o.cluster_method);
   }
 
   // Test membership if wanted
   if (o.test_membership != "no") {
-    matrix_t test_data;
+    trace("loading test file");
+    typename mt::type test_data;
     featurescale_t test_featurescale;
     try {
       if (o.filetype == "cluto") {
-        load_file_cluto(o.test_membership_filename, test_data, test_featurescale);
+        mt::load_file(o.test_membership_filename, test_data, test_featurescale);
       } else {
-        load_file_plain<datatype>(o.test_membership_filename, test_data, test_featurescale);
+        mt::load_file(o.test_membership_filename, test_data, test_featurescale);
       }
     } catch (const runtime_error& e) {
       cerr << "Error while loading test member ship data: " << e.what() << endl;
       return 1;
     }
     
-    std::vector<node_meta> nodemetaout;
-    if (o.test_membership == "eps") {
-      test_epsneighbourhood<norm_aggregator>(data, test_data, reference_distances_unsorted, 0, featurescale, metadata, o.test_membership_eps, nodemetaout); 
-    }
-
-    {
-      FILE *f = fopen("test.out", "w");
-      for (size_t i = 0; i < nodemetaout.size(); ++i) {
-        fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
+    if (o.test_membership == "eps" || o.test_membership == "k") {
+      trace("neighbourhood test");
+      bool write_neighbours = false;
+      if (o.test_write_neighbours_file.size()) {
+        write_neighbours = true;
       }
-      fclose(f);
-    }
-  }
-
-
-  trace("output");
-  {
-  FILE *f = fopen("cluster.out", "w");
-  for (size_t i = 0; i < metadata.size(); ++i) {
-    fprintf(f, "%s%s\n", metadata[i].cluster.c_str(), metadata[i].noise?" (noise)":"");
-  }
-  fclose(f);
-  }
-
-  FILE *f = fopen("distmatrix.out", "w");
-  bool first;
-  for (size_t i = 0; i < distancematrix.size1(); ++i) {
-    first = true;
-    for (size_t j = 0; j < distancematrix.size2(); ++j) {
-      if (first) {
-        fprintf(f, "%f", distancematrix(i,j));
-        first = false;
+      std::vector<node_meta> nodemetaout;
+      if (o.test_membership == "eps") {
+        test_epsneighbourhood<mt>(data, test_data, reference_distances, featurescale, metadata,
+              o.test_membership_eps, write_neighbours, nodemetaout); 
       } else {
-        fprintf(f, " %f", distancematrix(i,j));
+        test_knneighbourhood<mt>(data, test_data, reference_distances, featurescale, metadata,
+            o.test_membership_k, write_neighbours, nodemetaout); 
+      }
+
+      trace("writing membership.out");
+      {
+        FILE *f = fopen("membership.out", "w");
+        for (size_t i = 0; i < nodemetaout.size(); ++i) {
+          fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
+        }
+        fclose(f);
+      }
+
+      if (write_neighbours) {
+        trace("writing neighbour information");
+        FILE *f = fopen(o.test_write_neighbours_file.c_str(), "w");
+        for (size_t i = 0; i < nodemetaout.size(); ++i) {
+          bool first = true;
+          for (std::vector<size_t>::iterator it = nodemetaout[i].neighbour_ids.begin();
+                it != nodemetaout[i].neighbour_ids.end(); ++it)  { 
+            if (first) {
+              first = false;
+              fprintf(f, "%lu", *it);
+            } else {
+              fprintf(f, " %lu", *it);
+            }
+          }
+          fprintf(f, "\n");
+        }
+        fclose(f);
       }
     }
-    fputs("\n", f);
   }
-  fclose(f);
 
   dump_trace();
 
@@ -1044,10 +1007,18 @@ int main(int argc, char ** argv) {
 
   try {
     int ret;
-    if (o.norm == 1) {
-      ret = run_clusterer<c_manhattan<datatype> >(o);
+    if (o.filetype == "cluto") {
+      if (o.norm == 1) {
+        ret = run_clusterer<mt_sparse<1> >(o);
+      } else {
+        ret = run_clusterer<mt_sparse<2> >(o);
+      }
     } else {
-      ret = run_clusterer<c_euclid<datatype> >(o);
+      if (o.norm == 1) {
+        ret = run_clusterer<mt_dense<1> >(o);
+      } else {
+        ret = run_clusterer<mt_dense<2> >(o);
+      }
     }
     if (ret) {
       return 1;
@@ -1057,5 +1028,4 @@ int main(int argc, char ** argv) {
   }
 }
 /*}}}*/
-
 /* vim: set fdm=marker: */
