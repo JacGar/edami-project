@@ -28,77 +28,6 @@
 using namespace std;
 //using namespace arma;
 
-template <class T>
-class slowmatrix {
-  /** class to work around some horrible boost::numeric::ublas problems */
-  typedef std::vector<map<size_t, T> > contents_type;
-  contents_type contents;
-  size_t ncols;
-public:
-  class iterator2 : public map<size_t, T>::iterator {
-      size_t row;
-    public:
-      void setRow(size_t n) { row = n; };
-      size_t index1() const { return row; }
-      size_t index2() const { return this->first; }
-      T& operator*() const { return this->second; } 
-  };
-  typedef iterator2 const_iterator2;
-
-  class iterator1 : public contents_type::iterator {
-    std::vector<map<size_t, int> > beg_;
-    public:
-    void setVecBegin(const std::vector<map<size_t, int> >::iterator beg) {
-      beg_ = beg;
-    }
-    iterator2 begin() {
-      iterator2 n = this->begin(); 
-      n.setRow(*this - beg_);
-      return n;
-    }
-    iterator2 end() {
-      iterator2 n = this->end();
-      n.setRow(*this - beg_);
-      return n;
-    }
-
-  };
-
-  typedef iterator1 const_iterator1;
-    slowmatrix() : ncols(0), contents(0) { };
-    slowmatrix(size_t nrows, size_t ncols, size_t /* nelem */) : ncols(ncols), contents(nrows) {};
-
-    void resize(size_t nrows, size_t ncols_, size_t optional = 0) {
-      contents.resize(nrows);
-      ncols = ncols_;
-    }
-
-    T& operator()(size_t row, size_t col) {
-      if (row > contents.size()) {
-        throw std::runtime_error("row out of bounds");
-      }
-      if (col > ncols) {
-        throw std::runtime_error("col out of bounds");
-      } 
-      return contents[row][col];
-    }
-
-    size_t size1() {
-      return contents.size();
-    }
-
-    size_t size2() {
-      return ncols;
-    }
-
-    iterator1 begin1() {
-      return iterator1(contents.begin());
-    }
-
-    iterator1 end1() {
-      return iterator1(contents.end());
-    }
-};
 
 typedef double datatype; // TODO only int supported for now (atoi function calls)
 typedef arma::Mat<double> distancematrix_t;
@@ -113,6 +42,40 @@ struct node_meta {
   bool noise;
   std::vector<size_t> neighbour_ids;
 };
+
+/* }}} */
+/* trace code {{{ */
+
+std::vector<const char*> trace_points;
+std::vector<double> trace_tstamps;
+
+void trace(const char *tp) {
+  trace_points.push_back(tp);
+  trace_tstamps.push_back(clock());
+}
+
+void dump_trace() {
+  trace("");
+  for (size_t i = 0; i < trace_points.size()-1; ++i) {
+    cout << trace_points[i] << "\t" << (trace_tstamps[i+1]-trace_tstamps[i])/(double)CLOCKS_PER_SEC << endl;
+  }
+}
+
+void progress(const string& msg, size_t counter, size_t total) {
+  static string last_progress;
+  if (counter % 10 != 0) {
+    return;
+  }
+  if (string(msg) != last_progress) {
+    if (last_progress.size()) {
+      cout << last_progress << " done. Next: " << msg << endl;
+    }
+    last_progress = msg;
+  } else {
+    cout << msg << ": " << (100.0*counter/total) <<"% (" << counter << " of " << total <<")\r";
+    cout.flush();
+  }
+}
 
 /* }}} */
 /* file import {{{ */
@@ -153,271 +116,12 @@ void load_file_clusters(const std::string filename, std::vector<node_meta>& node
 }
 
 /* }}} */
-/* distance implementations {{{ */
-
-//typedef double (*distance_fun)(matrix_t &, long unsigned int, long unsigned int, const featurescale_t&);
-/*
-double manhattan_distance_proxied(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
-    // 45 seconds for n rows
-    boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
-    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
-    double dist = 0;
-    for (unsigned int i = 0; i < m.size2(); ++i) {
-        dist += fabs(row1_proxy(i) - row2_proxy(i));
-    }
-    return dist;
-}
-
-double manhattan_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t &featurescale) {
-    // 0.45 seconds for n rows
-    boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
-    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
-    return norm_1(row1_proxy - row2_proxy);
-}
-
-double eucledian_distance_builtin(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t &featurescale) {
-    // 0.45 seconds for n rows
-    boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
-    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m, row2);
-    return norm_2(row1_proxy - row2_proxy);
-}
-
-double eucledian_distance_builtin_2(matrix_t &m, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t &featurescale) {
-    // 0.45 seconds for n rows
-    boost::numeric::ublas::matrix_row<matrix_t> row1_proxy(m, row1);
-    boost::numeric::ublas::matrix_row<matrix_t> row2_proxy(m2, row2);
-    return norm_2(row1_proxy - row2_proxy);
-}
-*/
-/*
-double manhattan_distance_manual(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
-  // about 18 seconds for n rows. Adding const does not yield any improvement.
-  // is there a way to access rows directly, not with this fucking magic thing?
-  matrix_t::const_iterator1 it1 = m.begin1();
-  while (row1-- > 0) {
-    it1++;
-  }
-
-  matrix_t::const_iterator1 it2 = m.begin1();
-  while (row2-- > 0) {
-    it2++;
-  }
-
-  double dist = 0;
-  matrix_t::const_iterator2 it1_ = it1.begin();
-  matrix_t::const_iterator2 it2_ = it2.begin();
-  while (it1_ != it1.end() && it2_ != it2.end()) {
-    while (it1_.index2() < it2_.index2()) {
-      it1_++;
-      if (it1_ == it1.end())
-          goto out;
-    }
-    while (it2_.index2() < it1_.index2()) {
-      it2_++;
-      if (it2_ == it2.end())
-          goto out;
-    }
-    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
-      dist += fabs(*it1_ - *it2_);
-      it2_++; it1_++;
-    }
-  }
-out:
-  return dist;
-}
-
-template<class T>
-struct c_euclid {
-  static inline double aggregate(T a, T b, double fscl) {
-    double dist = (a-b)/fscl;
-    return dist*dist;
-  }
-  static inline double finalize(double dist) {
-    return sqrt(dist);
-  }
-};
-
-template<class T>
-struct c_manhattan {
-  static inline double aggregate(T a, T b, double fscl) {
-    return fabs(a-b)/fscl;
-  }
-  static inline double finalize(double dist) {
-    return dist;
-  }
-};
-
-template<class aggr>
-double distance_manual_cached(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
-  // this takes about 0.58 sec
-  // for the brave: changing anything about the matrix m might yield an invalid iterators, and crashes.
-  // this is a sort of workaround fr the fact that we cannot access rows directly, by caching
-  // the iterators. This, of course, assumes that the matrix m never changes, either it's values or
-  // its position in the memory.
-  static matrix_t::const_iterator1 *it1_c = NULL, *it2_c = NULL;
-  static long unsigned int pos1, pos2;
-  if (it1_c == NULL || it2_c == NULL) {
-    it1_c = new matrix_t::const_iterator1(m.begin1());
-    it2_c = new matrix_t::const_iterator1(m.begin1());
-    pos1 = pos2 = 0;
-  }
-  matrix_t::const_iterator1 &it1 = *it1_c;
-  matrix_t::const_iterator1 &it2 = *it2_c;
-
-  // move the iterator to the correct position.
-  while (pos1 > row1) { it1--; pos1--; }
-  while (pos1 < row1) { if (it1 == m.end1()) break; it1++; pos1++; }
-  while (pos2 > row2) { it2--; pos2--; }
-  while (pos2 < row2) { if (it2 == m.end1()) break; it2++; pos2++; }
-
-  double dist = 0;
-  matrix_t::const_iterator2 it1_ = it1.begin();
-  matrix_t::const_iterator2 it2_ = it2.begin();
-  while (it1_ != it1.end() && it2_ != it2.end()) {
-    while (it1_.index2() < it2_.index2()) {
-      it1_++;
-      if (it1_ == it1.end())
-          goto out;
-    }
-    while (it2_.index2() < it1_.index2()) {
-      it2_++;
-      if (it2_ == it2.end())
-          goto out;
-    }
-    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
-      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
-      *it1_++; *it2_++;
-    }
-  }
-out:
-  return aggr::finalize(dist);
-}
-
-template<class aggr>
-double distance_manual_cached_2(matrix_t &m, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t& featurescale) {
-  // this takes about 0.58 sec
-  // for the brave: changing anything about the matrix m might yield an invalid iterators, and crashes.
-  // this is a sort of workaround fr the fact that we cannot access rows directly, by caching
-  // the iterators. This, of course, assumes that the matrix m never changes, either it's values or
-  // its position in the memory.
-  static matrix_t::const_iterator1 *it1_c = NULL, *it2_c = NULL;
-  static long unsigned int pos1, pos2;
-  if (it1_c == NULL || it2_c == NULL) {
-    it1_c = new matrix_t::const_iterator1(m.begin1());
-    it2_c = new matrix_t::const_iterator1(m2.begin1());
-    pos1 = pos2 = 0;
-  }
-  matrix_t::const_iterator1 &it1 = *it1_c;
-  matrix_t::const_iterator1 &it2 = *it2_c;
-
-  // move the iterator to the correct position.
-  while (pos1 > row1) { it1--; pos1--; }
-  while (pos1 < row1) { if (it1 == m.end1()) break; it1++; pos1++; }
-  while (pos2 > row2) { it2--; pos2--; }
-  while (pos2 < row2) { if (it2 == m.end1()) break; it2++; pos2++; }
-
-  double dist = 0;
-  matrix_t::const_iterator2 it1_ = it1.begin();
-  matrix_t::const_iterator2 it2_ = it2.begin();
-  while (it1_ != it1.end() && it2_ != it2.end()) {
-    while (it1_.index2() < it2_.index2()) {
-      it1_++;
-      if (it1_ == it1.end())
-          goto out;
-    }
-    while (it2_.index2() < it1_.index2()) {
-      it2_++;
-      if (it2_ == it2.end())
-          goto out;
-    }
-    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
-      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
-      *it1_++; *it2_++;
-    }
-  }
-out:
-  return aggr::finalize(dist);
-}
-
-template<class aggr>
-double distance_find(matrix_t &m, long unsigned int row1, long unsigned int row2, const featurescale_t& featurescale) {
-
-  matrix_t::const_iterator1 it1 = m.find1(1, row1, 0);
-  matrix_t::const_iterator1 it2 = m.find1(1, row2, 0);
-
-  double dist = 0;
-  matrix_t::const_iterator2 it1_ = it1.begin();
-  matrix_t::const_iterator2 it2_ = it2.begin();
-  while (it1_ != it1.end() && it2_ != it2.end()) {
-    while (it1_.index2() < it2_.index2()) {
-      it1_++;
-      if (it1_ == it1.end())
-          goto out;
-    }
-    while (it2_.index2() < it1_.index2()) {
-      it2_++;
-      if (it2_ == it2.end())
-          goto out;
-    }
-    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
-      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
-      DBG(cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
-          << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_  <<" / fs=" << featurescale[it1_.index2()] <<" = " << aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]) << endl;)
-      *it1_++; *it2_++;
-    }
-  }
-out:
-  DBG(cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;)
-  return aggr::finalize(dist);
-}
-
-template<class aggr>
-double distance_find_2(matrix_t &m1, long unsigned int row1, matrix_t &m2, long unsigned int row2, const featurescale_t& featurescale) {
-
-  matrix_t::const_iterator1 it1 = m1.find1(1, row1, 0);
-  matrix_t::const_iterator1 it2 = m2.find1(1, row2, 0);
-
-  matrix_t::const_iterator2 it1_, it2_;
-  double dist = 0;
-  try {
-    it1_ = it1.begin();
-    it2_ = it2.begin();
-  } catch (...) {
-    cerr << it1.index1() << " " << it1.index2() << " " << it2.index1() << " " << it2.index2() << endl;
-    throw;
-  }
-  while (it1_ != it1.end() && it2_ != it2.end()) {
-    while (it1_.index2() < it2_.index2()) {
-      it1_++;
-      if (it1_ == it1.end())
-          goto out;
-    }
-    while (it2_.index2() < it1_.index2()) {
-      it2_++;
-      if (it2_ == it2.end())
-          goto out;
-    }
-    if (it1_.index2() == it2_.index2() && it1_ != it1.end() && it2_ != it2.end()) {
-      dist += aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]);
-      DBG(cout << "aggregating (" << it1_.index1() <<", " << it1_.index2() <<") = " << *it1_ << " and "
-          << "(" << it2_.index1() <<", " << it2_.index2() <<") = " << *it2_  <<" / fs=" << featurescale[it1_.index2()] <<" = " << aggr::aggregate(*it1_, *it2_, featurescale[it1_.index2()]) << endl;)
-      *it1_++; *it2_++;
-    }
-  }
-out:
-  DBG(cout << "finalizing " << dist << " " << aggr::finalize(dist) << endl;)
-  return aggr::finalize(dist);
-}
-*/
-
-
-/*}}}*/
 /* distance matrix {{{ */
 template<class mt>
 void create_distance_matrix(typename mt::type &data, const distvector_t &reference_distances_unsorted, double eps, const featurescale_t& featurescale, distancematrix_t &dst) {
   size_t ds1 = data.n_rows;
   for (size_t i = 0; i < ds1; ++i) {
-    cout << "processing line #" << i << endl;
+    progress("creating distance matrix", i, ds1);
     for (size_t j = 0; j < i; ++j) {
       if (fabs(reference_distances_unsorted[i].first - reference_distances_unsorted[j].first) <= eps) {
         dst(i,j) = mt::calculate_distance(data, i, data, j, featurescale);
@@ -558,20 +262,23 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
  * clearly not the case here.
  */
 template<class mt>
-void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data, size_t reference_point,
-    distvector_t& reference_distances_unsorted, featurescale_t &featurescale, const std::vector<node_meta> &nodemeta,
+void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data,
+    bool use_triangle_ineq, size_t reference_point, distvector_t& reference_distances_unsorted,
+    featurescale_t &featurescale, const std::vector<node_meta> &nodemeta,
     double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   std::vector<size_t> result_indizes;
   nodemetaout.resize(test_data.n_rows);
-  for (size_t i = 0; i < test_data.size1(); ++i) {
+
+  for (size_t i = 0; i < test_data.n_rows; ++i) {
+    progress("testing EPS neighbourhood", i, test_data.n_rows);
     double testpoint_to_reference = 0;
     result_indizes.clear();
-    if (reference_distances_unsorted.size()) {
+    if (use_triangle_ineq) {
        testpoint_to_reference = mt::calculate_distance(data, reference_point, test_data, i, featurescale);
     }
 
-    for (size_t j = 0; j < data.size1(); ++j) {
-      if (fabs(reference_distances_unsorted[j].first - testpoint_to_reference) <= eps) {
+    for (size_t j = 0; j < data.n_rows; ++j) {
+      if (use_triangle_ineq && (fabs(reference_distances_unsorted[j].first - testpoint_to_reference) > eps)) {
         continue;
       }
       double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
@@ -604,7 +311,8 @@ void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data
 } 
 
 template<class mt>
-void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data, distvector_t& /*reference_distances*/, featurescale_t &featurescale,
+void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data, bool use_triangle_ineq, size_t reference_point, 
+    distvector_t& reference_distances_sorted, featurescale_t &featurescale,
     const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   /* TODO triangle inequality:
    * for (t test_data) {
@@ -623,14 +331,73 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
    */
   distvector_t result_indizes;
   nodemetaout.resize(test_data.n_rows);
+  double testpoint_to_reference = 0.0;
+  
   for (size_t i = 0; i < test_data.n_rows; ++i) {
+    progress("testing k-nearest neighbours", i, test_data.n_rows);
     result_indizes.clear();
-    for (size_t j = 0; j < data.n_rows; ++j) {
-      double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
-      result_indizes.push_back(make_pair(dist, j));
+    result_indizes.reserve(k);
+    if (use_triangle_ineq) {
+      testpoint_to_reference = mt::calculate_distance(data, reference_point, test_data, i, featurescale);
+      size_t l = 0, r = reference_distances_sorted.size();
+      // 0 1 2 4 5
+      // -> 3
+      size_t m;
+      while (l != r) {
+        m = (l+r)/2;
+        if (testpoint_to_reference < reference_distances_sorted[m].first) {
+          r = m; 
+        } else if (reference_distances_sorted[m].first < testpoint_to_reference) {
+          if (l == m)
+            break;
+          l = m;
+        } else {
+          // we have found the exact point.
+          break;
+        }
+      }
+      if (m == l && r == m+1) {
+        if (fabs(testpoint_to_reference-reference_distances_sorted[r].first) < fabs(testpoint_to_reference-reference_distances_sorted[m].first)) {
+          m = r;
+        }
+      }
+      // this test always returns the self point as nearest neighbour, if it is in the data set.
+      // if the latter is the case, return it:
+      if (reference_distances_sorted[m].first == testpoint_to_reference) {
+        result_indizes.push_back(make_pair(0.0, reference_distances_sorted[m].second));
+      }
+      // closest pooint = reference_distances_sorted[m]
+      size_t lbound=m, rbound=m;
+      double mid_value = reference_distances_sorted[m].first; 
+      while (true) {
+        pair<unsigned int, double> closest_object = get_next(reference_distances_sorted, mid_value, lbound, rbound);
+        if (closest_object.first == UINT_MAX) {
+          break;
+        }
+        if (result_indizes.size() == k && result_indizes[k-1].first < closest_object.second) {
+          // we've found or k nearest members, the next closest objects 'minimum distance' is greater than the
+          // real distance of the k-th farthest element that we have already calculated.
+          break;
+        }
+        size_t real_index = reference_distances_sorted[closest_object.first].second;
+        double dist = mt::calculate_distance(data, i, test_data, real_index, featurescale);
+
+        if (result_indizes.size() < k) {
+          result_indizes.push_back(make_pair(dist, real_index));
+        } else {
+          result_indizes[k-1] = make_pair(dist, real_index);
+          sort(result_indizes.begin(), result_indizes.end());
+        }
+      }
+
+    } else { 
+      for (size_t j = 0; j < data.n_rows; ++j) {
+        double dist = mt::calculate_distance(test_data, i, data, j, featurescale);
+        result_indizes.push_back(make_pair(dist, j));
+      }
+      sort(result_indizes.begin(), result_indizes.end());
     }
 
-    sort(result_indizes.begin(), result_indizes.end());
     if (collect_neighbours) {
       nodemetaout[i].neighbour_ids.reserve(result_indizes.size());
     }
@@ -675,24 +442,6 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
     nodemetaout[i].cluster = cur_max_lbl;
   }
 } 
-/* }}} */
-/* trace code {{{ */
-
-std::vector<const char*> trace_points;
-std::vector<double> trace_tstamps;
-
-void trace(const char *tp) {
-  trace_points.push_back(tp);
-  trace_tstamps.push_back(clock());
-}
-
-void dump_trace() {
-  trace("");
-  for (size_t i = 0; i < trace_points.size()-1; ++i) {
-    cout << trace_points[i] << "\t" << (trace_tstamps[i+1]-trace_tstamps[i])/(double)CLOCKS_PER_SEC << endl;
-  }
-}
-
 /* }}} */
 /* cluster options & command line parsing {{{ */
 namespace po = boost::program_options;
@@ -884,11 +633,11 @@ int run_clusterer(const options& o) {
     trace("sort reference distances");
     distvector_t reference_distances_sorted = reference_distances;
     if (o.use_triangle_inequality) {
-      sort(reference_distances.begin(), reference_distances.end());
+      sort(reference_distances_sorted.begin(), reference_distances_sorted.end());
     }
 
     trace("DBSCAN");
-    dbscan(reference_distances, distancematrix, o.eps, o.minpts, metadata);
+    dbscan(reference_distances_sorted, distancematrix, o.eps, o.minpts, metadata);
     if (o.dump_distancematrix) {
       trace("dumping distance matrix");
       FILE *f = fopen("distmatrix.out", "w");
@@ -947,10 +696,14 @@ int run_clusterer(const options& o) {
       }
       std::vector<node_meta> nodemetaout;
       if (o.test_membership == "eps") {
-        test_epsneighbourhood<mt>(data, test_data, reference_distances, featurescale, metadata,
+        test_epsneighbourhood<mt>(data, test_data, 
+              o.use_triangle_inequality, 0u, reference_distances, featurescale, metadata,
               o.test_membership_eps, write_neighbours, nodemetaout); 
       } else {
-        test_knneighbourhood<mt>(data, test_data, reference_distances, featurescale, metadata,
+        distvector_t reference_distances_sorted = reference_distances;
+        sort(reference_distances_sorted.begin(), reference_distances_sorted.end());
+        test_knneighbourhood<mt>(data, test_data,
+            o.use_triangle_inequality, 0u, reference_distances_sorted, featurescale, metadata,
             o.test_membership_k, write_neighbours, nodemetaout); 
       }
 
@@ -1009,9 +762,9 @@ int main(int argc, char ** argv) {
     int ret;
     if (o.filetype == "cluto") {
       if (o.norm == 1) {
-        ret = run_clusterer<mt_sparse<1> >(o);
+        ret = run_clusterer<mt_sparse_simple<1> >(o);
       } else {
-        ret = run_clusterer<mt_sparse<2> >(o);
+        ret = run_clusterer<mt_sparse_simple<2> >(o);
       }
     } else {
       if (o.norm == 1) {
