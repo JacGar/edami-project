@@ -52,6 +52,8 @@ template <int norm>
     ++row;
   }
 }
+
+#ifdef USE_ARMADILLO
 template <int norm>
 /* static */void mt_sparse<norm>::load_file(const string& infilename, type& out, featurescale_t &featurescale) {
   FILE *fp;
@@ -111,12 +113,55 @@ template <int norm>
   }
   out = type(locations.t(), values);
 }
+#endif // USE_ARMADILLO
 
 template<int norm>
+/*static */ void mt_dense_simple<norm>::load_file(const string& infilename, type& out, featurescale_t &featurescale) {
+  FILE *fp;
+  char * line = NULL;
+  size_t len = 0;
+  ssize_t read;
+
+  fp = fopen(infilename.c_str(), "r");
+  if (fp == NULL) {
+    throw runtime_error("Could not open file " + infilename);
+  }
+
+  unsigned int row = 0;
+
+  while ((read = getline(&line, &len, fp)) != -1)  {
+    char* next_tk = strtok(line, " ");
+    unsigned int idx = 0;
+    std::vector<datatype> inner;
+    while (next_tk) {
+      datatype val = atoi(next_tk);
+      inner.push_back(val);
+
+      if (featurescale.size() <= idx) {
+        featurescale.push_back(val);
+      } else {
+        featurescale[idx] = max((double)featurescale[idx], (double)val);
+      }
+      idx++;
+      next_tk = strtok(NULL, " ");
+    }
+
+    if (out.size() && inner.size() != out[0].size()) {
+      throw runtime_error("matrix dimension mismatch on row " + boost::lexical_cast<string>(row+1));
+    }
+    ++row;
+    out.push_back(inner);
+  }
+
+  out.update();
+  if (!out.size()) {
+    throw runtime_error("Input file didn't contain anything apparently");
+  }
+}
+
+#ifdef USE_ARMADILLO
+template<int norm>
 /*static */ void mt_dense<norm>::load_file(const string& infilename, type& out, featurescale_t &featurescale) {
-  // this function reads a dense matrix into a sparse filetype, until i can figure out if there
-  // is a more efficient way to do this. Note that this will be pretty slow for larger datasets,
-  // both using the sparse datatype and the actual "read" implementation used here.
   FILE *fp;
   char * line = NULL;
   size_t len = 0;
@@ -165,6 +210,7 @@ template<int norm>
     }
   }
 }
+#endif
 
 void load_file_clusters(const std::string filename, std::vector<node_meta>& nodeinfo) {
   FILE *fp;
@@ -201,9 +247,13 @@ void load_file_clusters(const std::string filename, std::vector<node_meta>& node
   }
 }
 
+#ifdef USE_ARMADILLO
 template struct mt_dense<1>;
 template struct mt_dense<2>;
 template struct mt_sparse<1>;
 template struct mt_sparse<2>;
+#endif
 template struct mt_sparse_simple<1>;
 template struct mt_sparse_simple<2>;
+template struct mt_dense_simple<1>;
+template struct mt_dense_simple<2>;

@@ -3,8 +3,10 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include <boost/lexical_cast.hpp>
+#ifdef USE_ARMADILLO
 #include <armadillo>
+#endif
+#include <boost/lexical_cast.hpp>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -142,6 +144,51 @@ struct mt_sparse_simple {
     }
   }
 };
+
+template <int norm>
+struct mt_dense_simple {
+  typedef typename std::vector<std::vector<datatype> > wrapped_type;
+  class vecwrapper : public wrapped_type {
+  // for compatibility with the armadillo API functions used by the clusterer
+  public:
+    size_t n_cols;
+    size_t n_rows;
+    void update() {
+      n_rows = size();
+      if (n_rows > 0) {
+        n_cols = (*this)[0].size();
+      }
+    }
+  };
+  typedef vecwrapper type;
+
+  static double calculate_distance(const type &m, size_t row1, const type &m2, size_t row2, const featurescale_t& /*featurescale*/) {
+    if (row1 >= m.size() || row2 >= m2.size()) {
+      throw runtime_error("Index out of bounds");
+    }
+    if (m[row1].size() != m[row2].size()) {
+      throw runtime_error("Dimension mismatch");
+    }
+    double dist = 0.0;
+    for (size_t i = 0; i < m[row1].size(); ++i) {
+      if (norm == 1) {
+        dist += fabs(m[row1][i] - m2[row2][i]);
+      } else {
+        double tmp = m[row1][i] - m2[row2][i];
+        dist += tmp*tmp;
+      }
+    }
+
+    if (norm == 1) {
+      return dist;
+    } else {
+      return sqrt(dist);
+    }
+  }
+  static void load_file(const string& infilename, type& out, featurescale_t &featurescale);
+};
+
+#ifdef USE_ARMADILLO
 /* mt_sparse {{{*/
 template <int norm>
 struct mt_sparse {
@@ -199,8 +246,11 @@ extern template struct mt_dense<1>;
 extern template struct mt_dense<2>;
 extern template struct mt_sparse<1>;
 extern template struct mt_sparse<2>;
+#endif // USE_ARMADILLO
 extern template struct mt_sparse_simple<1>;
 extern template struct mt_sparse_simple<2>;
+extern template struct mt_dense_simple<1>;
+extern template struct mt_dense_simple<2>;
 #endif // HAVE_MATRIX_TYPES_HPP
 
 /* vim: set fdm=marker: */

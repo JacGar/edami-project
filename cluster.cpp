@@ -4,7 +4,6 @@
 #endif
 #include <boost/program_options.hpp>
 #include <boost/lexical_cast.hpp>
-#include <armadillo>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -611,7 +610,6 @@ int run_clusterer(const options& o) {
     trace("create distancematrix");
     distancematrix_t distancematrix(data.n_rows, data.n_rows);
     create_distance_matrix<mt>(data, reference_distances, o.eps, featurescale, distancematrix);
-    distancematrix = symmatu(distancematrix);
     
     trace("sort reference distances");
     distvector_t reference_distances_sorted = reference_distances;
@@ -625,9 +623,9 @@ int run_clusterer(const options& o) {
       trace("dumping distance matrix");
       FILE *f = fopen("distmatrix.out", "w");
       bool first;
-      for (size_t i = 0; i < distancematrix.n_rows; ++i) {
+      for (size_t i = 0; i < distancematrix.size(); ++i) {
         first = true;
-        for (size_t j = 0; j < distancematrix.n_cols; ++j) {
+        for (size_t j = 0; j < distancematrix.size(); ++j) {
           if (first) {
             fprintf(f, "%f", distancematrix(i,j));
             first = false;
@@ -752,9 +750,9 @@ int main(int argc, char ** argv) {
       }
     } else {
       if (o.norm == 1) {
-        ret = run_clusterer<mt_dense<1> >(o);
+        ret = run_clusterer<mt_dense_simple<1> >(o);
       } else {
-        ret = run_clusterer<mt_dense<2> >(o);
+        ret = run_clusterer<mt_dense_simple<2> >(o);
       }
     }
     if (ret) {
