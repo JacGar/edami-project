@@ -1,6 +1,0 @@
-FIND_PACKAGE( Boost COMPONENTS program_options REQUIRED )
-INCLUDE_DIRECTORIES( ${Boost_INCLUDE_DIR} )
-
-ADD_EXECUTABLE( cluster cluster.cpp )
-
-TARGET_LINK_LIBRARIES( cluster ${Boost_LIBRARIES} )
