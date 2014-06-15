@@ -50,7 +50,7 @@ void dump_trace() {
 }
 
 #ifdef SHOW_PROGRESS_UPDATE
-void progress(const string& msg, size_t counter, size_t total = 0) {
+void progress(const string& msg, uint64_t counter, uint64_t total = 0) {
   static string last_progress;
   if (counter % 50 != 0) {
     return;
@@ -62,11 +62,11 @@ void progress(const string& msg, size_t counter, size_t total = 0) {
     last_progress = msg;
   } else {
     printf("%20s: %5.1f%% (%lu of %lu)\r", msg.c_str(), (total==0)?100.0:100.0*counter/total, counter, total);
-    cout.flush();
+    fflush(stdout);
   }
 }
 #else
-void progress(const string &msg, size_t counter, size_t total = 0) {
+void progress(const string &msg, uint64_t counter, uint64_t total = 0) {
   static string last_progress;
   if (counter % 500 != 0) {
     return;
@@ -74,11 +74,12 @@ void progress(const string &msg, size_t counter, size_t total = 0) {
   if (string(msg) != last_progress) {
     if (last_progress.size()) {
       printf("%20s done.\n", last_progress.c_str());
+      fflush(stdout);
     }
     last_progress = msg;
   } else {
-    printf("%20s: %5.1f%% (%lu of %lu)\n", msg.c_str(), (total==0)?100.0:100.0*counter/total, counter, total);
-    cout.flush();
+    printf("%20s: %5.1f%% (%llu of %llu)\n", msg.c_str(), (total==0)?100.0:100.0*counter/total, counter, total);
+    fflush(stdout);
   }
 }
 #endif
@@ -120,7 +121,7 @@ double get_distance(const distancematrix_t &dst, size_t a, size_t b) {
  *
  * returns  the index of the next row and the distance to it, or (UINT_MAX, 0.0) when the end of the array has been reached.
  */
-pair<unsigned int, double> get_next(const distvector_t &distvec, const double mid_value, size_t &lbound, size_t &rbound) {
+pair<size_t, double> get_next(const distvector_t &distvec, const double mid_value, size_t &lbound, size_t &rbound) {
   size_t veclen = distvec.size();
   if (veclen == 0 || ((lbound == 0) && (rbound >= veclen-1))) {
     return make_pair(UINT_MAX, 0.0);
@@ -162,7 +163,7 @@ void getneighbours(const distvector_t &reference_distances, const distancematrix
   lbound = rbound = distvector_idx;
   double mid_value = reference_distances[distvector_idx].first;
 
-  pair<unsigned int, double> next_index;
+  pair<size_t, double> next_index;
   while ((next_index = get_next(reference_distances, mid_value, lbound, rbound)).first != UINT_MAX) {
     if (next_index.second > eps) {
       break;
@@ -176,7 +177,7 @@ void getneighbours(const distvector_t &reference_distances, const distancematrix
 }
 
 void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm, double eps, size_t minpts, std::vector<node_meta>& nodeinfo) {
-  int current_cluster = -1;
+  ssize_t current_cluster = -1;
   std::vector<size_t> neighbours;
   for (size_t i = 0; i < reference_distances.size(); ++i) {
     ssize_t obj_idx = reference_distances[i].second;
@@ -343,7 +344,7 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
       size_t lbound=m, rbound=m;
       double mid_value = reference_distances_sorted[m].first; 
       while (true) {
-        pair<unsigned int, double> closest_object = get_next(reference_distances_sorted, mid_value, lbound, rbound);
+        pair<size_t, double> closest_object = get_next(reference_distances_sorted, mid_value, lbound, rbound);
         if (closest_object.first == UINT_MAX) {
           break;
         }
@@ -438,7 +439,7 @@ class options {
     double eps;
     size_t minpts;
     string test_membership;
-    int test_membership_k;
+    uint64_t test_membership_k;
     double test_membership_eps;
     string test_membership_filename;
     string label_file;
@@ -454,10 +455,8 @@ class options {
       po::options_description desc("program options");
       desc.add_options()
         ("help,h", "show usage")
-        ("epsilon,e", po::value<double>()->default_value(0.5), "epsilon")
-        ("minpts,m", po::value<unsigned int>()->default_value(10), "minimum number of points to form a cluster")
         ("no-triangle-inequality,T", "don't use triangle inequality")
-        ("scale,s", "use feature scaling")
+        /*("scale,s", "use feature scaling") // TODO unimplemented as for now */
         ("input-file", "input file")
         ("input-type,t", po::value<string>()->default_value("cluto"), "File type of the input file. Possible values are:\n"
                                                                       "  cluto - CLUTO file format (sparse)\n"
@@ -467,6 +466,8 @@ class options {
                                                                           "  dbscan - cluster using dbscan\n"
                                                                           "  file   - read labels from file\n"
                                                                           "  none   - don't perform clustering\n")
+        ("epsilon,e", po::value<double>()->default_value(0.5), "Epsilon value for DBSCAN")
+        ("minpts,m", po::value<unsigned int>()->default_value(10), "minimum number of points to form a cluster for DBSCAN")
         ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
         ("test", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
                                                 "  no  - don't test membership\n"
@@ -474,7 +475,7 @@ class options {
                                                 "  k   - use k-nearest-neighbours")
         ("test-file", po::value<string>(), "file to read membership test values from. If not set, the main input file will be used.")
         ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
-        ("test-neighbours-out", po::value<string>()->default_value(""), "write neighbours to <file>")
+        ("test-out", po::value<string>()->default_value("neighbours.out"), "write neighbours to <file>")
         ("dump-distancematrix", "dump distancematrix to distancematrix.out")
       ;
 
@@ -529,13 +530,13 @@ class options {
 
       infile = vm["input-file"].as<string>();
       eps = vm["epsilon"].as<double>();
-      minpts = vm["minpts"].as<unsigned int>();
+      minpts = vm["minpts"].as<size_t>();
 
       test_membership = vm["test"].as<string>();
       test_membership_k = 0;
       test_membership_eps = 0.0;
       test_membership_filename = "";
-      test_write_neighbours_file = vm["test-neighbours-out"].as<string>();
+      test_write_neighbours_file = vm["test-out"].as<string>();
 
       if (test_membership != "no") {
         if (test_membership == "eps") {
@@ -547,7 +548,7 @@ class options {
           if (!vm.count("test-parameter")) {
             throw runtime_error("k-nearest-neighbours membership type requires a --test-parameter");
           }
-          test_membership_k = (int)vm["test-parameter"].as<double>();
+          test_membership_k = (uint64_t)vm["test-parameter"].as<double>();
         } else {
           throw runtime_error("unsupported membership test type: " + test_membership);
         }
@@ -592,14 +593,14 @@ int run_clusterer(const options& o) {
 
   if (o.use_triangle_inequality) {
     trace("create reference distances");
-    for (unsigned int i = 0; i < data.n_rows; ++i) {
+    for (size_t i = 0; i < data.n_rows; ++i) {
       progress("creating reference distances", i, data.n_rows);
       reference_distances[i] = make_pair(mt::calculate_distance(data, 0, data, i, featurescale), i);
       DBG(cout << reference_distances[i].first << " ";)
     }
     DBG(cout << endl;)
   } else {
-    for (unsigned int i = 0; i < reference_distances.size(); ++i) {
+    for (size_t i = 0; i < reference_distances.size(); ++i) {
       reference_distances[i] = make_pair(0.0, i);
     }
   }
@@ -736,9 +737,16 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  cout << "reading from " << o.infile << ", eps=" << o.eps <<", minpts=" << o.minpts << ", "
-    << (o.use_triangle_inequality?"":"not") << " using triangle inequality, "
-    << (o.use_feature_scaling?"":"not") << " using feature scaling." << endl;
+  cout << "reading from " << o.infile <<", ";
+  if (o.cluster_method == "dbscan") {
+    cout << "eps=" << o.eps <<", minpts=" << o.minpts << ", " << endl;
+  }
+  // << (o.use_feature_scaling?"":"not") << " using feature scaling." << endl;
+  if (o.test_membership != "none") {
+    cout << "using " << o.test_membership << " test method with " << o.test_membership <<"="<< ((o.test_membership=="eps")?o.test_membership_eps:o.test_membership_k)<< ", "
+      << "writing to " << o.test_membership_filename << endl;
+  }
+  cout  << (o.use_triangle_inequality?"":"not") << "using triangle inequality." << endl;
 
   try {
     int ret;
