@@ -228,6 +228,32 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
 
 /*}}}*/
 /* membership tests {{{*/
+class FileRange {
+  size_t from;
+  size_t end;
+  size_t current;
+  public:
+    FileRange(size_t max, string range) {
+      from = boost::lexical_cast<size_t>(range);
+      end = max;
+      current = from;
+      if (from > max) {
+        throw runtime_error(range + " is out of range for test data");
+      }
+    }
+
+    ssize_t getNext() {
+      if (current >= end) {
+        return -1;
+      }
+      return current++;
+    }
+
+    size_t getTotal() {
+      return end-from;
+    }
+};
+
 /**
  * On API design: "in a good API, you can guess the purpose of each parameter just by looking at the
  * type signature, ignoring the variable names"
@@ -235,14 +261,17 @@ void dbscan(const distvector_t &reference_distances, const distancematrix_t &dsm
  * clearly not the case here.
  */
 template<class mt>
-void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data,
+void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data, FileRange range, 
     bool use_triangle_ineq, size_t reference_point, distvector_t& reference_distances_unsorted,
     featurescale_t &featurescale, const std::vector<node_meta> &nodemeta,
     double eps, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   distvector_t result_indizes;
   nodemetaout.resize(test_data.n_rows);
 
-  for (size_t i = 0; i < test_data.n_rows; ++i) {
+  //for (size_t i = 0; i < test_data.n_rows; ++i) {
+  ssize_t i_next;
+  while ((i_next = range.getNext()) != -1) {
+    size_t i = i_next;
     progress("testing EPS neighbourhood", i, test_data.n_rows);
     double testpoint_to_reference = 0;
     result_indizes.clear();
@@ -285,7 +314,8 @@ void test_epsneighbourhood(typename mt::type& data, typename mt::type &test_data
 } 
 
 template<class mt>
-void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data, bool use_triangle_ineq, size_t reference_point, 
+void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data, FileRange range,
+    bool use_triangle_ineq, size_t reference_point, 
     distvector_t& reference_distances_sorted, featurescale_t &featurescale,
     const std::vector<node_meta> &nodemeta, size_t k, bool collect_neighbours, std::vector<node_meta> &nodemetaout) {
   /* TODO triangle inequality:
@@ -307,7 +337,11 @@ void test_knneighbourhood(typename mt::type& data, typename mt::type &test_data,
   nodemetaout.resize(test_data.n_rows);
   double testpoint_to_reference = 0.0;
   
-  for (size_t i = 0; i < test_data.n_rows; ++i) {
+  //for (size_t i = 0; i < test_data.n_rows; ++i) {
+  
+  ssize_t i_next;
+  while ((i_next = range.getNext()) != -1) {
+    size_t i = i_next;
     progress("testing k-nearest neighbours", i, test_data.n_rows);
     result_indizes.clear();
     result_indizes.reserve(k);
@@ -444,6 +478,7 @@ class options {
     string test_membership_filename;
     string label_file;
     string test_write_neighbours_file;
+    string start_from;
     bool dump_distancematrix;
 
     options() {
@@ -467,13 +502,14 @@ class options {
                                                                           "  file   - read labels from file\n"
                                                                           "  none   - don't perform clustering\n")
         ("epsilon,e", po::value<double>()->default_value(0.5), "Epsilon value for DBSCAN")
-        ("minpts,m", po::value<unsigned int>()->default_value(10), "minimum number of points to form a cluster for DBSCAN")
+        ("minpts,m", po::value<size_t>()->default_value(10), "minimum number of points to form a cluster for DBSCAN")
         ("labels,l", po::value<string>()->default_value("no"), "labels file (required for --cluster-method file)")
         ("test", po::value<string>()->default_value("no"), "test membership method, possible values:\n"
                                                 "  no  - don't test membership\n"
                                                 "  eps - use eps neighbourhood\n"
                                                 "  k   - use k-nearest-neighbours")
         ("test-file", po::value<string>(), "file to read membership test values from. If not set, the main input file will be used.")
+        ("test-start-from", po::value<string>()->default_value("0"), "start testing values from <line> in input file")
         ("test-parameter", po::value<double>(), "membership test parameter (eps or k)")
         ("test-out", po::value<string>()->default_value("neighbours.out"), "write neighbours to <file>")
         ("dump-distancematrix", "dump distancematrix to distancematrix.out")
@@ -537,6 +573,7 @@ class options {
       test_membership_eps = 0.0;
       test_membership_filename = "";
       test_write_neighbours_file = vm["test-out"].as<string>();
+      start_from = vm["test-start-from"].as<string>();
 
       if (test_membership != "no") {
         if (test_membership == "eps") {
@@ -677,14 +714,15 @@ int run_clusterer(const options& o) {
         write_neighbours = true;
       }
       std::vector<node_meta> nodemetaout;
+      FileRange range(test_data.n_rows, o.start_from);
       if (o.test_membership == "eps") {
-        test_epsneighbourhood<mt>(data, test_data, 
+        test_epsneighbourhood<mt>(data, test_data, range, 
               o.use_triangle_inequality, 0u, reference_distances, featurescale, metadata,
               o.test_membership_eps, write_neighbours, nodemetaout); 
       } else {
         distvector_t reference_distances_sorted = reference_distances;
         sort(reference_distances_sorted.begin(), reference_distances_sorted.end());
-        test_knneighbourhood<mt>(data, test_data,
+        test_knneighbourhood<mt>(data, test_data, range,
             o.use_triangle_inequality, 0u, reference_distances_sorted, featurescale, metadata,
             o.test_membership_k, write_neighbours, nodemetaout); 
       }
