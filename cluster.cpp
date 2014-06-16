@@ -727,8 +727,9 @@ int run_clusterer(const options& o) {
             o.test_membership_k, write_neighbours, nodemetaout); 
       }
 
-      trace("writing membership.out");
-      {
+
+      if (o.cluster_method != "none") {
+        trace("writing membership.out");
         FILE *f = fopen("membership.out", "w");
         for (size_t i = 0; i < nodemetaout.size(); ++i) {
           fprintf(f, "%s%s\n", nodemetaout[i].cluster.c_str(), nodemetaout[i].noise?" (noise)":"");
